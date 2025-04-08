@@ -6,6 +6,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 from github_insights import GitHubInsights
 from sonarqube_analyzer import SonarQubeAnalyzer
+from nexus_iq_analyzer import NexusIQAnalyzer
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 
 # Configure logging
 logging.basicConfig(
@@ -14,7 +17,8 @@ logging.basicConfig(
 )
 
 class OrgRepoScanner:
-    def __init__(self, token: str, org: str, sonar_url: str, sonar_token: str):
+    def __init__(self, token: str, org: str, sonar_url: str, sonar_token: str, 
+                 nexus_url: str, nexus_username: str, nexus_password: str):
         self.token = token
         self.org = org
         self.headers = {
@@ -24,6 +28,7 @@ class OrgRepoScanner:
         self.base_url = 'https://api.github.com'
         self.insights_client = GitHubInsights(token, org)
         self.sonar_analyzer = SonarQubeAnalyzer(sonar_url, sonar_token)
+        self.nexus_analyzer = NexusIQAnalyzer(nexus_url, nexus_username, nexus_password)
 
     def check_repo_content(self, repo_name: str) -> dict:
         """Check if repository has any code files."""
@@ -316,17 +321,41 @@ class OrgRepoScanner:
             for col in sonar_columns:
                 df[col] = 'N/A'
 
-            # Process each repository for SonarQube data
+            # Add Nexus IQ columns
+            nexus_columns = [
+                'Nexus IQ Status',
+                'Critical Issues',
+                'Severe Issues',
+                'Moderate Issues',
+                'Low Issues',
+                'Policy Violations',
+                'Security Violations',
+                'License Violations',
+                'Quality Violations',
+                'Total Components',
+                'Vulnerable Components',
+                'Risk Score',
+                'Policy Action',
+                'Last Scan',
+                'Evaluated Components'
+            ]
+
+            # Initialize Nexus IQ columns with 'N/A'
+            for col in nexus_columns:
+                df[col] = 'N/A'
+
+            # Process each repository for SonarQube and Nexus IQ data
             for idx, row in df.iterrows():
                 repo_name = row['Repository']
                 if pd.notna(repo_name):
+                    # Process SonarQube data
                     project_key = f"{repo_name}".lower()
                     logging.info(f"Processing SonarQube data for: {repo_name}")
                     
                     if project_info := self.sonar_analyzer.get_project_info(project_key):
                         metrics = self.sonar_analyzer.get_project_metrics(project_key)
                         
-                        # Update DataFrame with metrics
+                        # Update DataFrame with SonarQube metrics
                         df.at[idx, 'SonarQube Status'] = 'Active'
                         df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
                         df.at[idx, 'Bugs'] = metrics['bugs']
@@ -346,6 +375,30 @@ class OrgRepoScanner:
                         df.at[idx, 'Last Analysis'] = metrics['last_analysis']
                     else:
                         df.at[idx, 'SonarQube Status'] = 'Not Found'
+
+                    # Process Nexus IQ data
+                    logging.info(f"Processing Nexus IQ data for: {repo_name}")
+                    if app_info := self.nexus_analyzer.get_application_info(repo_name):
+                        metrics = self.nexus_analyzer.get_security_metrics(app_info['id'])
+                        
+                        # Update DataFrame with Nexus IQ metrics
+                        df.at[idx, 'Nexus IQ Status'] = 'Active'
+                        df.at[idx, 'Critical Issues'] = metrics['critical_issues']
+                        df.at[idx, 'Severe Issues'] = metrics['severe_issues']
+                        df.at[idx, 'Moderate Issues'] = metrics['moderate_issues']
+                        df.at[idx, 'Low Issues'] = metrics['low_issues']
+                        df.at[idx, 'Policy Violations'] = metrics['policy_violations']
+                        df.at[idx, 'Security Violations'] = metrics['security_violations']
+                        df.at[idx, 'License Violations'] = metrics['license_violations']
+                        df.at[idx, 'Quality Violations'] = metrics['quality_violations']
+                        df.at[idx, 'Total Components'] = metrics['total_components']
+                        df.at[idx, 'Vulnerable Components'] = metrics['vulnerable_components']
+                        df.at[idx, 'Risk Score'] = f"{metrics['risk_score']:.1f}"
+                        df.at[idx, 'Policy Action'] = metrics['policy_action']
+                        df.at[idx, 'Last Scan'] = metrics['last_scan_date']
+                        df.at[idx, 'Evaluated Components'] = metrics['evaluated_components']
+                    else:
+                        df.at[idx, 'Nexus IQ Status'] = 'Not Found'
 
             # Save to Excel with formatting
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
@@ -385,13 +438,17 @@ def main():
     github_org = os.getenv('GITHUB_ORG')
     sonar_url = os.getenv('SONAR_URL', 'http://localhost:9000')
     sonar_token = os.getenv('SONAR_TOKEN')
+    nexus_url = os.getenv('NEXUS_URL')
+    nexus_username = os.getenv('NEXUS_USERNAME')
+    nexus_password = os.getenv('NEXUS_PASSWORD')
     
-    if not all([github_token, github_org, sonar_token]):
+    if not all([github_token, github_org, sonar_token, nexus_url, nexus_username, nexus_password]):
         logging.error("Missing required environment variables")
         return
     
     # Initialize scanner
-    scanner = OrgRepoScanner(github_token, github_org, sonar_url, sonar_token)
+    scanner = OrgRepoScanner(github_token, github_org, sonar_url, sonar_token,
+                            nexus_url, nexus_username, nexus_password)
     
     # Create output filename with organization name
     output_file = f"{github_org}_repository_insights.xlsx"
