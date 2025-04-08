@@ -163,20 +163,9 @@ class SonarQubeAnalyzer:
 
     def update_excel_with_sonarqube_data(self, excel_file: str):
         """Update Excel file with SonarQube analysis data."""
-        temp_file = None
         try:
-            # First, make a copy of the original file
-            temp_file = f"{os.path.splitext(excel_file)[0]}_temp.xlsx"
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-                
-            # Copy the original file to temp file
-            with open(excel_file, 'rb') as source:
-                with open(temp_file, 'wb') as target:
-                    target.write(source.read())
-            
-            # Read the data from the temp file
-            df = pd.read_excel(temp_file, engine='openpyxl')
+            # Read the Excel file directly
+            df = pd.read_excel(excel_file, engine='openpyxl')
             
             if 'Repository' not in df.columns:
                 raise ValueError("Could not find 'Repository' column in the Excel file")
@@ -237,48 +226,49 @@ class SonarQubeAnalyzer:
                     else:
                         df.at[idx, 'SonarQube Status'] = 'Not Found'
             
-            # Create a new workbook
-            wb = openpyxl.Workbook()
+            # Save directly to a new file first
+            output_file = f"{os.path.splitext(excel_file)[0]}_new.xlsx"
+            
+            # Save with pandas first
+            df.to_excel(output_file, index=False, engine='openpyxl')
+            
+            # Now apply formatting
+            wb = openpyxl.load_workbook(output_file)
             ws = wb.active
             
-            # Write headers
-            headers = list(df.columns)
-            for col_num, header in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col_num, value=header)
+            # Format headers
+            for col_num, header in enumerate(df.columns, 1):
+                cell = ws.cell(row=1, column=col_num)
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
                 cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 ws.column_dimensions[get_column_letter(col_num)].width = 15
             
-            # Write data
-            for row_num, row_data in enumerate(df.values, 2):
-                for col_num, value in enumerate(row_data, 1):
-                    cell = ws.cell(row=row_num, column=col_num, value=value)
+            # Format data cells
+            for row in range(2, len(df) + 2):
+                for col in range(1, len(df.columns) + 1):
+                    cell = ws.cell(row=row, column=col)
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
-            # Save to temp file
-            wb.save(temp_file)
+            # Save the formatted workbook
+            wb.save(output_file)
             wb.close()
             
             # If everything was successful, replace the original file
-            os.replace(temp_file, excel_file)
+            if os.path.exists(excel_file):
+                os.remove(excel_file)
+            os.rename(output_file, excel_file)
             logging.info(f"Successfully updated {excel_file} with SonarQube data")
             
         except Exception as e:
             logging.error(f"Error updating Excel file: {str(e)}")
-            if temp_file and os.path.exists(temp_file):
+            # Clean up output file if it exists
+            if 'output_file' in locals() and os.path.exists(output_file):
                 try:
-                    os.remove(temp_file)
+                    os.remove(output_file)
                 except Exception as cleanup_error:
-                    logging.error(f"Error cleaning up temp file: {cleanup_error}")
+                    logging.error(f"Error cleaning up output file: {cleanup_error}")
             raise
-        finally:
-            # Final cleanup
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except Exception:
-                    pass
 
 def main():
     """Main function to run the SonarQube analysis."""
