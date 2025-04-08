@@ -59,19 +59,43 @@ def calculate_pr_cycle_time(pr):
     return cycle_time.total_seconds() / 3600  # Convert to hours
 
 def get_pull_requests(repo):
-    """Fetch pull requests for a given repository."""
-    url = f'https://api.github.com/repos/{GITHUB_ORG}/{repo}/pulls'
-    params = {'state': 'all'}  # Get both open and closed PRs
-    logging.info(f"Fetching pull requests from: {url}")
-    try:
-        response = requests.get(url, headers=HEADERS, params=params)
-        response.raise_for_status()
-        prs = response.json()
-        logging.info(f"Found {len(prs)} pull requests in {repo}")
-        return prs
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching pull requests for {repo}: {str(e)}")
-        return []
+    """Fetch all pull requests for a given repository."""
+    all_prs = []
+    page = 1
+    per_page = 100  # Maximum allowed by GitHub API
+    
+    while True:
+        url = f'https://api.github.com/repos/{GITHUB_ORG}/{repo}/pulls'
+        params = {
+            'state': 'all',
+            'per_page': per_page,
+            'page': page
+        }
+        logging.info(f"Fetching pull requests from: {url} (Page {page})")
+        
+        try:
+            response = requests.get(url, headers=HEADERS, params=params)
+            response.raise_for_status()
+            prs = response.json()
+            
+            if not prs:  # No more PRs to fetch
+                break
+                
+            all_prs.extend(prs)
+            logging.info(f"Found {len(prs)} pull requests on page {page}")
+            
+            # Check if we've received less than per_page items, meaning this is the last page
+            if len(prs) < per_page:
+                break
+                
+            page += 1
+            
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error fetching pull requests for {repo} on page {page}: {str(e)}")
+            break
+    
+    logging.info(f"Total pull requests found in {repo}: {len(all_prs)}")
+    return all_prs
 
 def main(mytimer: func.TimerRequest = None) -> None:
     utc_timestamp = datetime.now(UTC).isoformat()
