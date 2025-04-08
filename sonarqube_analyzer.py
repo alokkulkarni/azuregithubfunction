@@ -157,11 +157,29 @@ class SonarQubeAnalyzer:
         try:
             # Read the existing Excel file
             workbook = openpyxl.load_workbook(analysis_file)
-            summary_sheet = workbook['Summary']
+            
+            # Get the first sheet (assuming it's the main analysis sheet)
+            sheet_names = workbook.sheetnames
+            if not sheet_names:
+                raise ValueError("No sheets found in the Excel file")
+                
+            main_sheet = workbook[sheet_names[0]]
+            logging.info(f"Using sheet: {main_sheet.title}")
+            
+            # Find the repository column (first column)
+            repo_col = 1
+            if main_sheet.cell(row=1, column=repo_col).value != 'Repository':
+                # Try to find the repository column
+                for col in range(1, main_sheet.max_column + 1):
+                    if main_sheet.cell(row=1, column=col).value == 'Repository':
+                        repo_col = col
+                        break
+                else:
+                    raise ValueError("Could not find 'Repository' column in the sheet")
             
             # Find the last column
             last_col = 1
-            while summary_sheet.cell(row=1, column=last_col).value is not None:
+            while main_sheet.cell(row=1, column=last_col).value is not None:
                 last_col += 1
             
             # Add SonarQube headers
@@ -187,50 +205,51 @@ class SonarQubeAnalyzer:
             
             # Write headers
             for idx, header in enumerate(sonar_headers, start=last_col):
-                cell = summary_sheet.cell(row=1, column=idx)
+                cell = main_sheet.cell(row=1, column=idx)
                 cell.value = header
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
                 cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                summary_sheet.column_dimensions[chr(64 + idx)].width = 15
+                main_sheet.column_dimensions[chr(64 + idx)].width = 15
             
             # Process each repository
-            for row in range(2, summary_sheet.max_row + 1):
-                repo = summary_sheet.cell(row=row, column=1).value
+            for row in range(2, main_sheet.max_row + 1):
+                repo = main_sheet.cell(row=row, column=repo_col).value
                 if repo:
                     project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
+                    logging.info(f"Processing repository: {repo} (Project key: {project_key})")
                     
                     if project_info := self.get_project_info(project_key):
                         metrics = self.get_project_metrics(project_key)
                         
                         # Write metrics
                         col = last_col
-                        summary_sheet.cell(row=row, column=col).value = 'Active'
-                        summary_sheet.cell(row=row, column=col + 1).value = metrics['quality_gate_status']
-                        summary_sheet.cell(row=row, column=col + 2).value = metrics['bugs']
-                        summary_sheet.cell(row=row, column=col + 3).value = metrics['vulnerabilities']
-                        summary_sheet.cell(row=row, column=col + 4).value = metrics['code_smells']
-                        summary_sheet.cell(row=row, column=col + 5).value = f"{metrics['coverage']:.1f}"
-                        summary_sheet.cell(row=row, column=col + 6).value = f"{metrics['duplicated_lines_density']:.1f}"
-                        summary_sheet.cell(row=row, column=col + 7).value = metrics['security_rating']
-                        summary_sheet.cell(row=row, column=col + 8).value = metrics['reliability_rating']
-                        summary_sheet.cell(row=row, column=col + 9).value = metrics['sqale_rating']
-                        summary_sheet.cell(row=row, column=col + 10).value = metrics['lines_of_code']
-                        summary_sheet.cell(row=row, column=col + 11).value = metrics['cognitive_complexity']
-                        summary_sheet.cell(row=row, column=col + 12).value = metrics['technical_debt']
-                        summary_sheet.cell(row=row, column=col + 13).value = f"{metrics['test_success_density']:.1f}"
-                        summary_sheet.cell(row=row, column=col + 14).value = metrics['test_failures']
-                        summary_sheet.cell(row=row, column=col + 15).value = metrics['test_errors']
-                        summary_sheet.cell(row=row, column=col + 16).value = metrics['last_analysis']
+                        main_sheet.cell(row=row, column=col).value = 'Active'
+                        main_sheet.cell(row=row, column=col + 1).value = metrics['quality_gate_status']
+                        main_sheet.cell(row=row, column=col + 2).value = metrics['bugs']
+                        main_sheet.cell(row=row, column=col + 3).value = metrics['vulnerabilities']
+                        main_sheet.cell(row=row, column=col + 4).value = metrics['code_smells']
+                        main_sheet.cell(row=row, column=col + 5).value = f"{metrics['coverage']:.1f}"
+                        main_sheet.cell(row=row, column=col + 6).value = f"{metrics['duplicated_lines_density']:.1f}"
+                        main_sheet.cell(row=row, column=col + 7).value = metrics['security_rating']
+                        main_sheet.cell(row=row, column=col + 8).value = metrics['reliability_rating']
+                        main_sheet.cell(row=row, column=col + 9).value = metrics['sqale_rating']
+                        main_sheet.cell(row=row, column=col + 10).value = metrics['lines_of_code']
+                        main_sheet.cell(row=row, column=col + 11).value = metrics['cognitive_complexity']
+                        main_sheet.cell(row=row, column=col + 12).value = metrics['technical_debt']
+                        main_sheet.cell(row=row, column=col + 13).value = f"{metrics['test_success_density']:.1f}"
+                        main_sheet.cell(row=row, column=col + 14).value = metrics['test_failures']
+                        main_sheet.cell(row=row, column=col + 15).value = metrics['test_errors']
+                        main_sheet.cell(row=row, column=col + 16).value = metrics['last_analysis']
                     else:
                         # Fill with 'Not Found' for projects not in SonarQube
                         for i in range(len(sonar_headers)):
-                            summary_sheet.cell(row=row, column=last_col + i).value = 'Not Found' if i == 0 else 'N/A'
+                            main_sheet.cell(row=row, column=last_col + i).value = 'Not Found' if i == 0 else 'N/A'
             
             # Format all data cells
-            for row in range(2, summary_sheet.max_row + 1):
+            for row in range(2, main_sheet.max_row + 1):
                 for col in range(last_col, last_col + len(sonar_headers)):
-                    cell = summary_sheet.cell(row=row, column=col)
+                    cell = main_sheet.cell(row=row, column=col)
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
             # Save the workbook
