@@ -164,15 +164,10 @@ class SonarQubeAnalyzer:
     def update_excel_with_sonarqube_data(self, excel_file: str):
         """Update Excel file with SonarQube analysis data."""
         try:
-            # Load the Excel file
-            wb = openpyxl.load_workbook(excel_file)
-            sheet = wb.active
+            # Read Excel file with pandas
+            df = pd.read_excel(excel_file, engine='openpyxl')
             
-            # Find the Repository column
-            header_row = list(sheet.iter_rows(min_row=1, max_row=1, values_only=True))[0]
-            try:
-                repo_col_idx = header_row.index('Repository') + 1
-            except ValueError:
+            if 'Repository' not in df.columns:
                 raise ValueError("Could not find 'Repository' column in the Excel file")
             
             # Define SonarQube columns to add
@@ -196,69 +191,74 @@ class SonarQubeAnalyzer:
                 'Last Analysis'
             ]
             
-            # Add SonarQube column headers
-            start_col = sheet.max_column + 1
-            for col_num, header in enumerate(sonar_columns, start=start_col):
-                cell = sheet.cell(row=1, column=col_num)
-                cell.value = header
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                sheet.column_dimensions[get_column_letter(col_num)].width = 15
+            # Initialize new columns with 'N/A'
+            for col in sonar_columns:
+                df[col] = 'N/A'
             
             # Process each repository
-            for row in range(2, sheet.max_row + 1):
-                repo = sheet.cell(row=row, column=repo_col_idx).value
-                if repo:
+            for idx, row in df.iterrows():
+                repo = row['Repository']
+                if pd.notna(repo):  # Check if repository name is not NaN
                     project_key = f"{repo}".lower()
                     logging.info(f"Processing repository: {repo} (Project key: {project_key})")
                     
                     if project_info := self.get_project_info(project_key):
                         metrics = self.get_project_metrics(project_key)
                         
-                        # Write metrics to Excel
-                        col = start_col
-                        sheet.cell(row=row, column=col, value='Active')
-                        sheet.cell(row=row, column=col + 1, value=metrics['quality_gate_status'])
-                        sheet.cell(row=row, column=col + 2, value=metrics['bugs'])
-                        sheet.cell(row=row, column=col + 3, value=metrics['vulnerabilities'])
-                        sheet.cell(row=row, column=col + 4, value=metrics['code_smells'])
-                        sheet.cell(row=row, column=col + 5, value=f"{metrics['coverage']:.1f}")
-                        sheet.cell(row=row, column=col + 6, value=f"{metrics['duplicated_lines_density']:.1f}")
-                        sheet.cell(row=row, column=col + 7, value=metrics['security_rating'])
-                        sheet.cell(row=row, column=col + 8, value=metrics['reliability_rating'])
-                        sheet.cell(row=row, column=col + 9, value=metrics['sqale_rating'])
-                        sheet.cell(row=row, column=col + 10, value=metrics['lines_of_code'])
-                        sheet.cell(row=row, column=col + 11, value=metrics['cognitive_complexity'])
-                        sheet.cell(row=row, column=col + 12, value=metrics['technical_debt'])
-                        sheet.cell(row=row, column=col + 13, value=f"{metrics['test_success_density']:.1f}")
-                        sheet.cell(row=row, column=col + 14, value=metrics['test_failures'])
-                        sheet.cell(row=row, column=col + 15, value=metrics['test_errors'])
-                        sheet.cell(row=row, column=col + 16, value=metrics['last_analysis'])
+                        # Update DataFrame with metrics
+                        df.at[idx, 'SonarQube Status'] = 'Active'
+                        df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
+                        df.at[idx, 'Bugs'] = metrics['bugs']
+                        df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
+                        df.at[idx, 'Code Smells'] = metrics['code_smells']
+                        df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
+                        df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
+                        df.at[idx, 'Security Rating'] = metrics['security_rating']
+                        df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
+                        df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
+                        df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
+                        df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
+                        df.at[idx, 'Technical Debt'] = metrics['technical_debt']
+                        df.at[idx, 'Test Success (%)'] = f"{metrics['test_success_density']:.1f}"
+                        df.at[idx, 'Test Failures'] = metrics['test_failures']
+                        df.at[idx, 'Test Errors'] = metrics['test_errors']
+                        df.at[idx, 'Last Analysis'] = metrics['last_analysis']
                     else:
-                        # Fill with 'Not Found' for projects not in SonarQube
-                        for i in range(len(sonar_columns)):
-                            cell = sheet.cell(row=row, column=start_col + i)
-                            cell.value = 'Not Found' if i == 0 else 'N/A'
-                    
-                    # Apply alignment to all cells in the row
-                    for col in range(start_col, start_col + len(sonar_columns)):
-                        cell = sheet.cell(row=row, column=col)
+                        df.at[idx, 'SonarQube Status'] = 'Not Found'
+            
+            # Create a temporary file with timestamp
+            temp_file = f"{os.path.splitext(excel_file)[0]}_temp.xlsx"
+            
+            # Save DataFrame to Excel
+            with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Sheet1')
+                
+                # Get the workbook and worksheet for formatting
+                wb = writer.book
+                ws = wb['Sheet1']
+                
+                # Format headers
+                for col_num, column in enumerate(df.columns, 1):
+                    cell = ws.cell(row=1, column=col_num)
+                    cell.font = Font(bold=True)
+                    cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    ws.column_dimensions[get_column_letter(col_num)].width = 15
+                
+                # Format data cells
+                for row in range(2, len(df) + 2):
+                    for col in range(1, len(df.columns) + 1):
+                        cell = ws.cell(row=row, column=col)
                         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
-            # Save the workbook with a backup strategy
-            backup_file = f"{os.path.splitext(excel_file)[0]}_backup.xlsx"
-            wb.save(backup_file)
-            wb.close()
-            
-            # If save was successful, replace the original file
-            os.replace(backup_file, excel_file)
+            # Replace original file with new file
+            os.replace(temp_file, excel_file)
             logging.info(f"Successfully updated {excel_file} with SonarQube data")
             
         except Exception as e:
             logging.error(f"Error updating Excel file: {str(e)}")
-            if 'backup_file' in locals() and os.path.exists(backup_file):
-                os.remove(backup_file)
+            if 'temp_file' in locals() and os.path.exists(temp_file):
+                os.remove(temp_file)
             raise
 
 def main():
