@@ -165,54 +165,20 @@ class SonarQubeAnalyzer:
 
     def enrich_analysis_file(self, analysis_file: str):
         """Enrich existing analysis file with SonarQube data."""
-        workbook = None
-        temp_file = None
-        
         try:
             if not os.path.exists(analysis_file):
                 raise FileNotFoundError(f"Original file not found: {analysis_file}")
             
-            # Create a temporary file
-            temp_fd, temp_file = tempfile.mkstemp(suffix='.xlsx')
-            os.close(temp_fd)  # Close the file descriptor
+            # Read the Excel file using pandas
+            df = pd.read_excel(analysis_file)
+            logging.info(f"Successfully read Excel file: {analysis_file}")
             
-            # Copy original file to temp file
-            shutil.copy2(analysis_file, temp_file)
-            logging.info(f"Created temporary working file")
+            # Verify Repository column exists
+            if 'Repository' not in df.columns:
+                raise ValueError("Could not find 'Repository' column in the sheet")
             
-            # Read the Excel file
-            try:
-                workbook = openpyxl.load_workbook(temp_file)
-            except Exception as load_error:
-                logging.error(f"Error loading Excel file: {str(load_error)}")
-                raise load_error
-            
-            # Get the first sheet (assuming it's the main analysis sheet)
-            sheet_names = workbook.sheetnames
-            if not sheet_names:
-                raise ValueError("No sheets found in the Excel file")
-                
-            main_sheet = workbook[sheet_names[0]]
-            logging.info(f"Using sheet: {main_sheet.title}")
-            
-            # Find the repository column (first column)
-            repo_col = 1
-            if main_sheet.cell(row=1, column=repo_col).value != 'Repository':
-                # Try to find the repository column
-                for col in range(1, main_sheet.max_column + 1):
-                    if main_sheet.cell(row=1, column=col).value == 'Repository':
-                        repo_col = col
-                        break
-                else:
-                    raise ValueError("Could not find 'Repository' column in the sheet")
-            
-            # Find the last column
-            last_col = 1
-            while main_sheet.cell(row=1, column=last_col).value is not None:
-                last_col += 1
-            
-            # Add SonarQube headers
-            sonar_headers = [
+            # Add SonarQube columns
+            sonar_columns = [
                 'SonarQube Status',
                 'Quality Gate',
                 'Bugs',
@@ -232,60 +198,80 @@ class SonarQubeAnalyzer:
                 'Last Analysis'
             ]
             
-            # Write headers
-            for idx, header in enumerate(sonar_headers, start=last_col):
-                col_letter = get_column_letter(idx)
-                cell = main_sheet.cell(row=1, column=idx)
-                cell.value = header
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                main_sheet.column_dimensions[col_letter].width = 15
+            # Initialize new columns with 'N/A'
+            for col in sonar_columns:
+                df[col] = 'N/A'
             
             # Process each repository
-            for row in range(2, main_sheet.max_row + 1):
-                repo = main_sheet.cell(row=row, column=repo_col).value
-                if repo:
+            for idx, row in df.iterrows():
+                repo = row['Repository']
+                if pd.notna(repo):  # Check if repository name is not NaN
                     project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
                     logging.info(f"Processing repository: {repo} (Project key: {project_key})")
                     
                     if project_info := self.get_project_info(project_key):
                         metrics = self.get_project_metrics(project_key)
                         
-                        # Write metrics
-                        col = last_col
-                        main_sheet.cell(row=row, column=col).value = 'Active'
-                        main_sheet.cell(row=row, column=col + 1).value = metrics['quality_gate_status']
-                        main_sheet.cell(row=row, column=col + 2).value = metrics['bugs']
-                        main_sheet.cell(row=row, column=col + 3).value = metrics['vulnerabilities']
-                        main_sheet.cell(row=row, column=col + 4).value = metrics['code_smells']
-                        main_sheet.cell(row=row, column=col + 5).value = f"{metrics['coverage']:.1f}"
-                        main_sheet.cell(row=row, column=col + 6).value = f"{metrics['duplicated_lines_density']:.1f}"
-                        main_sheet.cell(row=row, column=col + 7).value = metrics['security_rating']
-                        main_sheet.cell(row=row, column=col + 8).value = metrics['reliability_rating']
-                        main_sheet.cell(row=row, column=col + 9).value = metrics['sqale_rating']
-                        main_sheet.cell(row=row, column=col + 10).value = metrics['lines_of_code']
-                        main_sheet.cell(row=row, column=col + 11).value = metrics['cognitive_complexity']
-                        main_sheet.cell(row=row, column=col + 12).value = metrics['technical_debt']
-                        main_sheet.cell(row=row, column=col + 13).value = f"{metrics['test_success_density']:.1f}"
-                        main_sheet.cell(row=row, column=col + 14).value = metrics['test_failures']
-                        main_sheet.cell(row=row, column=col + 15).value = metrics['test_errors']
-                        main_sheet.cell(row=row, column=col + 16).value = metrics['last_analysis']
+                        # Update metrics in DataFrame
+                        df.at[idx, 'SonarQube Status'] = 'Active'
+                        df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
+                        df.at[idx, 'Bugs'] = metrics['bugs']
+                        df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
+                        df.at[idx, 'Code Smells'] = metrics['code_smells']
+                        df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
+                        df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
+                        df.at[idx, 'Security Rating'] = metrics['security_rating']
+                        df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
+                        df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
+                        df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
+                        df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
+                        df.at[idx, 'Technical Debt'] = metrics['technical_debt']
+                        df.at[idx, 'Test Success (%)'] = f"{metrics['test_success_density']:.1f}"
+                        df.at[idx, 'Test Failures'] = metrics['test_failures']
+                        df.at[idx, 'Test Errors'] = metrics['test_errors']
+                        df.at[idx, 'Last Analysis'] = metrics['last_analysis']
                     else:
-                        # Fill with 'Not Found' for projects not in SonarQube
-                        for i in range(len(sonar_headers)):
-                            main_sheet.cell(row=row, column=last_col + i).value = 'Not Found' if i == 0 else 'N/A'
+                        df.at[idx, 'SonarQube Status'] = 'Not Found'
             
-            # Format all data cells
-            for row in range(2, main_sheet.max_row + 1):
-                for col in range(last_col, last_col + len(sonar_headers)):
-                    cell = main_sheet.cell(row=row, column=col)
-                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            # Create a temporary file
+            temp_fd, temp_file = tempfile.mkstemp(suffix='.xlsx')
+            os.close(temp_fd)
             
-            # Save and replace the original file
             try:
-                workbook.save(temp_file)
-                workbook.close()
+                # Write to Excel with formatting
+                with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Repository Analysis')
+                    
+                    # Get the workbook and worksheet
+                    workbook = writer.book
+                    worksheet = writer.sheets['Repository Analysis']
+                    
+                    # Format headers
+                    header_format = {
+                        'font': Font(bold=True),
+                        'fill': PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid'),
+                        'alignment': Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    }
+                    
+                    # Apply header formatting
+                    for col in range(1, worksheet.max_column + 1):
+                        cell = worksheet.cell(row=1, column=col)
+                        cell.font = header_format['font']
+                        cell.fill = header_format['fill']
+                        cell.alignment = header_format['alignment']
+                    
+                    # Format data cells
+                    data_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    for row in range(2, worksheet.max_row + 1):
+                        for col in range(1, worksheet.max_column + 1):
+                            cell = worksheet.cell(row=row, column=col)
+                            cell.alignment = data_alignment
+                    
+                    # Set column widths
+                    for col in range(worksheet.max_column):
+                        worksheet.column_dimensions[get_column_letter(col + 1)].width = 15
+                
+                # Move temporary file to replace original
                 shutil.move(temp_file, analysis_file)
                 logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
                 temp_file = None  # Prevent deletion in finally block
@@ -299,10 +285,6 @@ class SonarQubeAnalyzer:
             raise
             
         finally:
-            # Clean up
-            if workbook and not workbook.closed:
-                workbook.close()
-            
             # Remove temporary file if it exists
             if temp_file and os.path.exists(temp_file):
                 try:
