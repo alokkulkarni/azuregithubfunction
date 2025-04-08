@@ -61,9 +61,10 @@ def calculate_pr_cycle_time(pr):
 def get_pull_requests(repo):
     """Fetch pull requests for a given repository."""
     url = f'https://api.github.com/repos/{GITHUB_ORG}/{repo}/pulls'
+    params = {'state': 'all'}  # Get both open and closed PRs
     logging.info(f"Fetching pull requests from: {url}")
     try:
-        response = requests.get(url, headers=HEADERS)
+        response = requests.get(url, headers=HEADERS, params=params)
         response.raise_for_status()
         prs = response.json()
         logging.info(f"Found {len(prs)} pull requests in {repo}")
@@ -102,10 +103,17 @@ def main(mytimer: func.TimerRequest = None) -> None:
             logging.info(f"No pull requests found in {repo}")
             continue
 
-        # Calculate average cycle time
+        # Initialize cycle time tracking
         total_cycle_time = 0
         total_prs = len(pull_requests)
         
+        # Separate tracking for open and closed PRs
+        open_prs = []
+        closed_prs = []
+        open_cycle_time = 0
+        closed_cycle_time = 0
+        
+        # Process each PR
         for pr in pull_requests:
             logging.info(f"PR #{pr['number']}: {pr['title']} - State: {pr['state']}")
             logging.info(f"Created by: {pr['user']['login']}")
@@ -114,17 +122,40 @@ def main(mytimer: func.TimerRequest = None) -> None:
             cycle_time = calculate_pr_cycle_time(pr)
             total_cycle_time += cycle_time
             
+            # Track PR by state
+            if pr['state'] == 'closed':
+                closed_prs.append(pr)
+                closed_cycle_time += cycle_time
+            else:
+                open_prs.append(pr)
+                open_cycle_time += cycle_time
+            
             status = "Closed" if pr['state'] == 'closed' else "Open"
             formatted_time = format_cycle_time(cycle_time)
             logging.info(f"Cycle time: {formatted_time} ({status})")
             logging.info("---")
 
-        # Log average cycle time for the repository
+        # Log average cycle times
         if total_prs > 0:
+            # All PRs average
             avg_cycle_time = total_cycle_time / total_prs
             formatted_avg_time = format_cycle_time(avg_cycle_time)
-            logging.info(f"Repository {repo} - Average PR cycle time: {formatted_avg_time}")
+            logging.info(f"Repository {repo} - Average PR cycle time (All PRs): {formatted_avg_time}")
             logging.info(f"Total PRs analyzed: {total_prs}")
+            
+            # Closed PRs average
+            if closed_prs:
+                avg_closed_cycle_time = closed_cycle_time / len(closed_prs)
+                formatted_closed_time = format_cycle_time(avg_closed_cycle_time)
+                logging.info(f"Repository {repo} - Average PR cycle time (Closed PRs): {formatted_closed_time}")
+                logging.info(f"Closed PRs: {len(closed_prs)}")
+            
+            # Open PRs average
+            if open_prs:
+                avg_open_cycle_time = open_cycle_time / len(open_prs)
+                formatted_open_time = format_cycle_time(avg_open_cycle_time)
+                logging.info(f"Repository {repo} - Average PR cycle time (Open PRs): {formatted_open_time}")
+                logging.info(f"Open PRs: {len(open_prs)}")
         else:
             logging.info(f"Repository {repo} - No PRs found for cycle time calculation")
 
