@@ -165,82 +165,86 @@ class SonarQubeAnalyzer:
 
     def enrich_analysis_file(self, analysis_file: str):
         """Enrich existing analysis file with SonarQube data."""
-        temp_file = None  # Initialize temp_file at the start
+        if not os.path.exists(analysis_file):
+            raise FileNotFoundError(f"Original file not found: {analysis_file}")
+        
+        # Read the Excel file using pandas
+        df = pd.read_excel(analysis_file)
+        logging.info(f"Successfully read Excel file: {analysis_file}")
+        
+        # Verify Repository column exists
+        if 'Repository' not in df.columns:
+            raise ValueError("Could not find 'Repository' column in the sheet")
+        
+        # Add SonarQube columns
+        sonar_columns = [
+            'SonarQube Status',
+            'Quality Gate',
+            'Bugs',
+            'Vulnerabilities',
+            'Code Smells',
+            'Coverage (%)',
+            'Duplication (%)',
+            'Security Rating',
+            'Reliability Rating',
+            'Maintainability Rating',
+            'Lines of Code',
+            'Cognitive Complexity',
+            'Technical Debt',
+            'Test Success (%)',
+            'Test Failures',
+            'Test Errors',
+            'Last Analysis'
+        ]
+        
+        # Initialize new columns with 'N/A'
+        for col in sonar_columns:
+            df[col] = 'N/A'
+        
+        # Process each repository
+        for idx, row in df.iterrows():
+            repo = row['Repository']
+            if pd.notna(repo):  # Check if repository name is not NaN
+                project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
+                logging.info(f"Processing repository: {repo} (Project key: {project_key})")
+                
+                if project_info := self.get_project_info(project_key):
+                    metrics = self.get_project_metrics(project_key)
+                    
+                    # Update metrics in DataFrame
+                    df.at[idx, 'SonarQube Status'] = 'Active'
+                    df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
+                    df.at[idx, 'Bugs'] = metrics['bugs']
+                    df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
+                    df.at[idx, 'Code Smells'] = metrics['code_smells']
+                    df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
+                    df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
+                    df.at[idx, 'Security Rating'] = metrics['security_rating']
+                    df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
+                    df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
+                    df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
+                    df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
+                    df.at[idx, 'Technical Debt'] = metrics['technical_debt']
+                    df.at[idx, 'Test Success (%)'] = f"{metrics['test_success_density']:.1f}"
+                    df.at[idx, 'Test Failures'] = metrics['test_failures']
+                    df.at[idx, 'Test Errors'] = metrics['test_errors']
+                    df.at[idx, 'Last Analysis'] = metrics['last_analysis']
+                else:
+                    df.at[idx, 'SonarQube Status'] = 'Not Found'
+        
+        # Save with formatting
+        self._save_excel_with_formatting(df, analysis_file)
+        logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
+
+    def _save_excel_with_formatting(self, df: pd.DataFrame, output_file: str):
+        """Save DataFrame to Excel with formatting."""
+        # Create a temporary file
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
+        os.close(temp_fd)
         
         try:
-            if not os.path.exists(analysis_file):
-                raise FileNotFoundError(f"Original file not found: {analysis_file}")
-            
-            # Read the Excel file using pandas
-            df = pd.read_excel(analysis_file)
-            logging.info(f"Successfully read Excel file: {analysis_file}")
-            
-            # Verify Repository column exists
-            if 'Repository' not in df.columns:
-                raise ValueError("Could not find 'Repository' column in the sheet")
-            
-            # Add SonarQube columns
-            sonar_columns = [
-                'SonarQube Status',
-                'Quality Gate',
-                'Bugs',
-                'Vulnerabilities',
-                'Code Smells',
-                'Coverage (%)',
-                'Duplication (%)',
-                'Security Rating',
-                'Reliability Rating',
-                'Maintainability Rating',
-                'Lines of Code',
-                'Cognitive Complexity',
-                'Technical Debt',
-                'Test Success (%)',
-                'Test Failures',
-                'Test Errors',
-                'Last Analysis'
-            ]
-            
-            # Initialize new columns with 'N/A'
-            for col in sonar_columns:
-                df[col] = 'N/A'
-            
-            # Process each repository
-            for idx, row in df.iterrows():
-                repo = row['Repository']
-                if pd.notna(repo):  # Check if repository name is not NaN
-                    project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
-                    logging.info(f"Processing repository: {repo} (Project key: {project_key})")
-                    
-                    if project_info := self.get_project_info(project_key):
-                        metrics = self.get_project_metrics(project_key)
-                        
-                        # Update metrics in DataFrame
-                        df.at[idx, 'SonarQube Status'] = 'Active'
-                        df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
-                        df.at[idx, 'Bugs'] = metrics['bugs']
-                        df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
-                        df.at[idx, 'Code Smells'] = metrics['code_smells']
-                        df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
-                        df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
-                        df.at[idx, 'Security Rating'] = metrics['security_rating']
-                        df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
-                        df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
-                        df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
-                        df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
-                        df.at[idx, 'Technical Debt'] = metrics['technical_debt']
-                        df.at[idx, 'Test Success (%)'] = f"{metrics['test_success_density']:.1f}"
-                        df.at[idx, 'Test Failures'] = metrics['test_failures']
-                        df.at[idx, 'Test Errors'] = metrics['test_errors']
-                        df.at[idx, 'Last Analysis'] = metrics['last_analysis']
-                    else:
-                        df.at[idx, 'SonarQube Status'] = 'Not Found'
-            
-            # Create a temporary file for writing
-            temp_fd, temp_file = tempfile.mkstemp(suffix='.xlsx')
-            os.close(temp_fd)
-            
             # Write to Excel with formatting
-            with pd.ExcelWriter(temp_file, engine='openpyxl', mode='w') as writer:
+            with pd.ExcelWriter(temp_path, engine='openpyxl', mode='w') as writer:
                 df.to_excel(writer, index=False, sheet_name='Repository Analysis')
                 
                 # Get the workbook and worksheet
@@ -273,28 +277,13 @@ class SonarQubeAnalyzer:
                     worksheet.column_dimensions[get_column_letter(col + 1)].width = 15
             
             # Move temporary file to replace original
-            shutil.move(temp_file, analysis_file)
-            logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
-            temp_file = None  # Prevent deletion in finally block since file was moved
+            shutil.move(temp_path, output_file)
             
         except Exception as e:
-            logging.error(f"Error enriching analysis file with SonarQube data: {str(e)}")
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                    logging.info("Cleaned up temporary file after error")
-                except Exception as cleanup_error:
-                    logging.warning(f"Could not remove temporary file: {str(cleanup_error)}")
-            raise
-            
-        finally:
-            # Final cleanup of temporary file if it still exists
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                    logging.info("Cleaned up temporary file in finally block")
-                except Exception as cleanup_error:
-                    logging.warning(f"Could not remove temporary file in finally: {str(cleanup_error)}")
+            # Clean up temp file if something goes wrong
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise e
 
 def main():
     """Main function to run the SonarQube analysis."""
