@@ -25,20 +25,28 @@ class SonarQubeAnalyzer:
         }
 
     def get_project_info(self, project_key: str) -> Optional[Dict]:
-        """Get project information from SonarQube."""
+        """Get project information from SonarQube using measures endpoint."""
         try:
-            url = f"{self.base_url}/api/projects/search"
+            url = f"{self.base_url}/api/measures/component"
             params = {
-                'q': project_key
+                'component': project_key,
+                'metricKeys': 'ncloc'  # Using a simple metric to validate project existence
             }
             response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             
             data = response.json()
-            components = data.get('components', [])
+            component = data.get('component')
             
-            return components[0] if components else None
+            # If we get a component back, the project exists
+            return component if component else None
             
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logging.info(f"Project {project_key} not found in SonarQube")
+            else:
+                logging.error(f"Error fetching project info for {project_key}: {str(e)}")
+            return None
         except Exception as e:
             logging.error(f"Error fetching project info for {project_key}: {str(e)}")
             return None
