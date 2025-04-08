@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 
 # Configure logging
 logging.basicConfig(
@@ -213,12 +214,13 @@ class SonarQubeAnalyzer:
             
             # Write headers
             for idx, header in enumerate(sonar_headers, start=last_col):
+                col_letter = get_column_letter(idx)
                 cell = main_sheet.cell(row=1, column=idx)
                 cell.value = header
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
                 cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                main_sheet.column_dimensions[chr(64 + idx)].width = 15
+                main_sheet.column_dimensions[col_letter].width = 15
             
             # Process each repository
             for row in range(2, main_sheet.max_row + 1):
