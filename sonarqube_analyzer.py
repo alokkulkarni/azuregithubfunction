@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+import shutil
+import tempfile
 
 # Configure logging
 logging.basicConfig(
@@ -164,22 +166,25 @@ class SonarQubeAnalyzer:
     def enrich_analysis_file(self, analysis_file: str):
         """Enrich existing analysis file with SonarQube data."""
         workbook = None
+        temp_file = None
+        
         try:
-            # Create a backup of the original file with .xlsx extension
-            backup_file = f"{os.path.splitext(analysis_file)[0]}_backup.xlsx"
-            if os.path.exists(analysis_file):
-                os.replace(analysis_file, backup_file)
-                logging.info(f"Created backup file: {backup_file}")
-            else:
+            if not os.path.exists(analysis_file):
                 raise FileNotFoundError(f"Original file not found: {analysis_file}")
             
-            # Read the backup file
+            # Create a temporary file
+            temp_fd, temp_file = tempfile.mkstemp(suffix='.xlsx')
+            os.close(temp_fd)  # Close the file descriptor
+            
+            # Copy original file to temp file
+            shutil.copy2(analysis_file, temp_file)
+            logging.info(f"Created temporary working file")
+            
+            # Read the Excel file
             try:
-                workbook = openpyxl.load_workbook(backup_file)
+                workbook = openpyxl.load_workbook(temp_file)
             except Exception as load_error:
                 logging.error(f"Error loading Excel file: {str(load_error)}")
-                # Restore the original file if we can't load the backup
-                os.replace(backup_file, analysis_file)
                 raise load_error
             
             # Get the first sheet (assuming it's the main analysis sheet)
@@ -277,42 +282,34 @@ class SonarQubeAnalyzer:
                     cell = main_sheet.cell(row=row, column=col)
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
-            # Save the workbook to the original filename
+            # Save and replace the original file
             try:
-                workbook.save(analysis_file)
+                workbook.save(temp_file)
+                workbook.close()
+                shutil.move(temp_file, analysis_file)
                 logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
-                
-                # Remove the backup file if save was successful
-                if os.path.exists(backup_file):
-                    os.remove(backup_file)
-                    logging.info("Removed backup file after successful save")
+                temp_file = None  # Prevent deletion in finally block
                 
             except Exception as save_error:
                 logging.error(f"Error saving enriched file: {str(save_error)}")
-                # Restore the backup if save failed
-                if os.path.exists(backup_file):
-                    os.replace(backup_file, analysis_file)
-                    logging.info("Restored original file from backup")
                 raise save_error
             
         except Exception as e:
             logging.error(f"Error enriching analysis file with SonarQube data: {str(e)}")
-            # Restore the backup if it exists and something went wrong
-            if os.path.exists(backup_file):
-                os.replace(backup_file, analysis_file)
-                logging.info("Restored original file from backup due to error")
             raise
+            
         finally:
             # Clean up
-            if workbook:
+            if workbook and not workbook.closed:
                 workbook.close()
-            # Remove backup file if it still exists
-            if os.path.exists(backup_file):
+            
+            # Remove temporary file if it exists
+            if temp_file and os.path.exists(temp_file):
                 try:
-                    os.remove(backup_file)
-                    logging.info("Cleaned up backup file")
+                    os.remove(temp_file)
+                    logging.info("Cleaned up temporary file")
                 except Exception as cleanup_error:
-                    logging.warning(f"Could not remove backup file: {str(cleanup_error)}")
+                    logging.warning(f"Could not remove temporary file: {str(cleanup_error)}")
 
 def main():
     """Main function to run the SonarQube analysis."""
