@@ -163,9 +163,16 @@ class SonarQubeAnalyzer:
 
     def enrich_analysis_file(self, analysis_file: str):
         """Enrich existing analysis file with SonarQube data."""
+        workbook = None
         try:
-            # Read the existing Excel file
-            workbook = openpyxl.load_workbook(analysis_file)
+            # Create a backup of the original file
+            backup_file = f"{analysis_file}.bak"
+            if os.path.exists(analysis_file):
+                os.replace(analysis_file, backup_file)
+                logging.info(f"Created backup file: {backup_file}")
+            
+            # Read the backup file
+            workbook = openpyxl.load_workbook(backup_file)
             
             # Get the first sheet (assuming it's the main analysis sheet)
             sheet_names = workbook.sheetnames
@@ -226,7 +233,7 @@ class SonarQubeAnalyzer:
             for row in range(2, main_sheet.max_row + 1):
                 repo = main_sheet.cell(row=row, column=repo_col).value
                 if repo:
-                    project_key = f"{repo}".lower()
+                    project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
                     logging.info(f"Processing repository: {repo} (Project key: {project_key})")
                     
                     if project_info := self.get_project_info(project_key):
@@ -262,13 +269,41 @@ class SonarQubeAnalyzer:
                     cell = main_sheet.cell(row=row, column=col)
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
-            # Save the workbook
-            workbook.save(analysis_file)
-            logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
+            # Save the workbook to the original filename
+            try:
+                workbook.save(analysis_file)
+                logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
+                
+                # Remove the backup file if save was successful
+                os.remove(backup_file)
+                logging.info("Removed backup file after successful save")
+                
+            except Exception as save_error:
+                logging.error(f"Error saving enriched file: {str(save_error)}")
+                # Restore the backup if save failed
+                if os.path.exists(backup_file):
+                    os.replace(backup_file, analysis_file)
+                    logging.info("Restored original file from backup")
+                raise save_error
             
         except Exception as e:
             logging.error(f"Error enriching analysis file with SonarQube data: {str(e)}")
+            # Restore the backup if it exists and something went wrong
+            if os.path.exists(backup_file):
+                os.replace(backup_file, analysis_file)
+                logging.info("Restored original file from backup due to error")
             raise
+        finally:
+            # Clean up
+            if workbook:
+                workbook.close()
+            # Remove backup file if it still exists
+            if os.path.exists(backup_file):
+                try:
+                    os.remove(backup_file)
+                    logging.info("Cleaned up backup file")
+                except Exception as cleanup_error:
+                    logging.warning(f"Could not remove backup file: {str(cleanup_error)}")
 
 def main():
     """Main function to run the SonarQube analysis."""
