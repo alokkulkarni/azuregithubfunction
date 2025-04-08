@@ -38,3 +38,4 @@ local.settings.json
 
 # Logs
 *.log 
+venv/
