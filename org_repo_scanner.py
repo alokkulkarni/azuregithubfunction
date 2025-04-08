@@ -23,6 +23,32 @@ class OrgRepoScanner:
         self.base_url = 'https://api.github.com'
         self.insights_client = GitHubInsights(token, org)
 
+    def check_repo_content(self, repo_name: str) -> dict:
+        """Check if repository has any code files."""
+        try:
+            url = f'{self.base_url}/repos/{self.org}/{repo_name}/contents'
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            
+            contents = response.json()
+            if not contents:
+                return {'has_content': False, 'content_type': 'Empty'}
+            
+            # Check for code files
+            code_extensions = {'.py', '.js', '.java', '.cpp', '.cs', '.go', '.rb', '.php', '.ts', '.swift'}
+            has_code = any(
+                any(item.get('name', '').endswith(ext) for ext in code_extensions)
+                for item in contents if isinstance(item, dict)
+            )
+            
+            return {
+                'has_content': True,
+                'content_type': 'Contains Code' if has_code else 'No Code Files'
+            }
+        except Exception as e:
+            logging.error(f"Error checking content for {repo_name}: {str(e)}")
+            return {'has_content': False, 'content_type': 'Error checking content'}
+
     def get_all_repos(self) -> list:
         """Get all repositories in the organization."""
         repos = []
@@ -89,7 +115,7 @@ class OrgRepoScanner:
             'Watchers': repo.get('watchers_count', 0),
             'Open Issues': repo.get('open_issues_count', 0),
             'Size (KB)': repo.get('size', 0),
-            'Language': repo.get('language', 'Not Specified'),
+            'Language': repo.get('language', ''),
             'Last Commit SHA': '',
             'Last Commit Message': '',
             'Last Commit Author': '',
@@ -98,16 +124,23 @@ class OrgRepoScanner:
             'Total Contributors': 0,
             'Open PRs': 0,
             'Closed PRs': 0,
+            'Has Content': '',
+            'Content Type': '',
             'Processed At': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
         try:
+            # Check repository content
+            content_info = self.check_repo_content(repo_name)
+            insights['Has Content'] = content_info['has_content']
+            insights['Content Type'] = content_info['content_type']
+
             # Safely get license information
             license_info = repo.get('license') or {}
             if isinstance(license_info, dict):
-                insights['License'] = license_info.get('name', 'No License')
+                insights['License'] = license_info.get('name', '')
             else:
-                insights['License'] = 'No License'
+                insights['License'] = ''
 
             # Get additional insights using GitHubInsights
             try:
@@ -132,9 +165,10 @@ class OrgRepoScanner:
                     top_contributors = []
                     for c in contributors[:5]:
                         if isinstance(c, dict):
-                            login = c.get('login', 'Unknown')
+                            login = c.get('login', '')
                             contributions = c.get('contributions', 0)
-                            top_contributors.append(f"{login} ({contributions})")
+                            if login:
+                                top_contributors.append(f"{login} ({contributions})")
                     insights['Top Contributors'] = ', '.join(top_contributors)
 
             # Get PR counts
@@ -151,6 +185,7 @@ class OrgRepoScanner:
                             insights['Closed PRs'] = last_page
                         except (ValueError, IndexError) as e:
                             logging.error(f"Error parsing PR count for {repo_name}: {str(e)}")
+                            insights['Closed PRs'] = 0
                     else:
                         pr_data = pr_response.json()
                         insights['Closed PRs'] = len(pr_data) if isinstance(pr_data, list) else 0
@@ -163,10 +198,17 @@ class OrgRepoScanner:
                     insights['Open PRs'] = len(pr_data) if isinstance(pr_data, list) else 0
             except requests.exceptions.RequestException as e:
                 logging.error(f"Error fetching PR data for {repo_name}: {str(e)}")
+                insights['Open PRs'] = 0
+                insights['Closed PRs'] = 0
 
         except Exception as e:
             logging.error(f"Error getting insights for {repo_name}: {str(e)}")
             insights['Processed At'] = f"Error: {str(e)}"
+
+        # Ensure all string values are empty strings instead of None
+        for key, value in insights.items():
+            if value is None:
+                insights[key] = ''
 
         return insights
 
@@ -197,6 +239,9 @@ class OrgRepoScanner:
             for col in date_columns:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Replace NaN values with empty strings
+            df = df.fillna('')
 
             # Save to Excel
             logging.info(f"Saving insights to: {output_file}")
