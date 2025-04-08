@@ -58,7 +58,10 @@ class SonarQubeAnalyzer:
             'quality_gate_status': 'N/A',
             'lines_of_code': 0,
             'cognitive_complexity': 0,
-            'technical_debt': '0min'
+            'technical_debt': '0min',
+            'test_success_density': 0.0,
+            'test_failures': 0,
+            'test_errors': 0
         }
         
         try:
@@ -66,9 +69,9 @@ class SonarQubeAnalyzer:
             url = f"{self.base_url}/api/measures/component"
             params = {
                 'component': project_key,
-                'metricKeys': 'bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,'
+                'metricKeys': ('bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,'
                              'security_rating,reliability_rating,sqale_rating,ncloc,cognitive_complexity,'
-                             'sqale_index'
+                             'sqale_index,test_success_density,test_failures,test_errors')
             }
             response = requests.get(url, auth=self.auth, headers=self.headers, params=params)
             response.raise_for_status()
@@ -88,7 +91,10 @@ class SonarQubeAnalyzer:
                 'sqale_rating': self._convert_rating(measures.get('sqale_rating', '0')),
                 'lines_of_code': int(measures.get('ncloc', 0)),
                 'cognitive_complexity': int(measures.get('cognitive_complexity', 0)),
-                'technical_debt': self._convert_technical_debt(measures.get('sqale_index', '0'))
+                'technical_debt': self._convert_technical_debt(measures.get('sqale_index', '0')),
+                'test_success_density': float(measures.get('test_success_density', 0)),
+                'test_failures': int(measures.get('test_failures', 0)),
+                'test_errors': int(measures.get('test_errors', 0))
             })
             
             # Get quality gate status
@@ -146,23 +152,20 @@ class SonarQubeAnalyzer:
         except (ValueError, TypeError):
             return "0min"
 
-    def enrich_github_analysis(self, github_analysis_file: str, output_file: str):
-        """Enrich GitHub analysis with SonarQube data."""
+    def enrich_analysis_file(self, analysis_file: str):
+        """Enrich existing analysis file with SonarQube data."""
         try:
-            # Read the GitHub analysis Excel file
-            xls = pd.ExcelFile(github_analysis_file)
+            # Read the existing Excel file
+            workbook = openpyxl.load_workbook(analysis_file)
+            summary_sheet = workbook['Summary']
             
-            # Read all sheets
-            sheets = {
-                sheet_name: pd.read_excel(xls, sheet_name)
-                for sheet_name in xls.sheet_names
-            }
+            # Find the last column
+            last_col = 1
+            while summary_sheet.cell(row=1, column=last_col).value is not None:
+                last_col += 1
             
-            # Add SonarQube metrics to the Summary sheet
-            summary_df = sheets['Summary']
-            
-            # Add new columns for SonarQube metrics
-            sonar_columns = [
+            # Add SonarQube headers
+            sonar_headers = [
                 'SonarQube Status',
                 'Quality Gate',
                 'Bugs',
@@ -176,101 +179,66 @@ class SonarQubeAnalyzer:
                 'Lines of Code',
                 'Cognitive Complexity',
                 'Technical Debt',
+                'Test Success (%)',
+                'Test Failures',
+                'Test Errors',
                 'Last Analysis'
             ]
             
-            for col in sonar_columns:
-                summary_df[col] = 'N/A'
+            # Write headers
+            for idx, header in enumerate(sonar_headers, start=last_col):
+                cell = summary_sheet.cell(row=1, column=idx)
+                cell.value = header
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                summary_sheet.column_dimensions[chr(64 + idx)].width = 15
             
-            # Update each repository with SonarQube data
-            for idx, row in summary_df.iterrows():
-                repo = row['Repository']
-                project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
-                
-                if project_info := self.get_project_info(project_key):
-                    metrics = self.get_project_metrics(project_key)
+            # Process each repository
+            for row in range(2, summary_sheet.max_row + 1):
+                repo = summary_sheet.cell(row=row, column=1).value
+                if repo:
+                    project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
                     
-                    summary_df.at[idx, 'SonarQube Status'] = 'Active'
-                    summary_df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
-                    summary_df.at[idx, 'Bugs'] = metrics['bugs']
-                    summary_df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
-                    summary_df.at[idx, 'Code Smells'] = metrics['code_smells']
-                    summary_df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
-                    summary_df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
-                    summary_df.at[idx, 'Security Rating'] = metrics['security_rating']
-                    summary_df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
-                    summary_df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
-                    summary_df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
-                    summary_df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
-                    summary_df.at[idx, 'Technical Debt'] = metrics['technical_debt']
-                    summary_df.at[idx, 'Last Analysis'] = metrics['last_analysis']
-                else:
-                    summary_df.at[idx, 'SonarQube Status'] = 'Not Found'
+                    if project_info := self.get_project_info(project_key):
+                        metrics = self.get_project_metrics(project_key)
+                        
+                        # Write metrics
+                        col = last_col
+                        summary_sheet.cell(row=row, column=col).value = 'Active'
+                        summary_sheet.cell(row=row, column=col + 1).value = metrics['quality_gate_status']
+                        summary_sheet.cell(row=row, column=col + 2).value = metrics['bugs']
+                        summary_sheet.cell(row=row, column=col + 3).value = metrics['vulnerabilities']
+                        summary_sheet.cell(row=row, column=col + 4).value = metrics['code_smells']
+                        summary_sheet.cell(row=row, column=col + 5).value = f"{metrics['coverage']:.1f}"
+                        summary_sheet.cell(row=row, column=col + 6).value = f"{metrics['duplicated_lines_density']:.1f}"
+                        summary_sheet.cell(row=row, column=col + 7).value = metrics['security_rating']
+                        summary_sheet.cell(row=row, column=col + 8).value = metrics['reliability_rating']
+                        summary_sheet.cell(row=row, column=col + 9).value = metrics['sqale_rating']
+                        summary_sheet.cell(row=row, column=col + 10).value = metrics['lines_of_code']
+                        summary_sheet.cell(row=row, column=col + 11).value = metrics['cognitive_complexity']
+                        summary_sheet.cell(row=row, column=col + 12).value = metrics['technical_debt']
+                        summary_sheet.cell(row=row, column=col + 13).value = f"{metrics['test_success_density']:.1f}"
+                        summary_sheet.cell(row=row, column=col + 14).value = metrics['test_failures']
+                        summary_sheet.cell(row=row, column=col + 15).value = metrics['test_errors']
+                        summary_sheet.cell(row=row, column=col + 16).value = metrics['last_analysis']
+                    else:
+                        # Fill with 'Not Found' for projects not in SonarQube
+                        for i in range(len(sonar_headers)):
+                            summary_sheet.cell(row=row, column=last_col + i).value = 'Not Found' if i == 0 else 'N/A'
             
-            # Create a new Excel writer
-            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                # Write updated summary sheet
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                
-                # Copy other sheets as is
-                for sheet_name, df in sheets.items():
-                    if sheet_name != 'Summary':
-                        df.to_excel(writer, sheet_name=sheet_name, index=False)
-                
-                # Format the Summary sheet
-                worksheet = writer.sheets['Summary']
-                
-                # Set column widths
-                column_widths = {
-                    'A': 30,  # Repository
-                    'B': 15,  # Quality Score
-                    'C': 15,  # Aberrancy Score
-                    'D': 20,  # Industry Rating
-                    'E': 15,  # Risk Level
-                    'F': 40,  # Risk Factors
-                    'G': 25,  # Analyzed At
-                    'H': 15,  # SonarQube Status
-                    'I': 15,  # Quality Gate
-                    'J': 10,  # Bugs
-                    'K': 15,  # Vulnerabilities
-                    'L': 15,  # Code Smells
-                    'M': 15,  # Coverage (%)
-                    'N': 15,  # Duplication (%)
-                    'O': 15,  # Security Rating
-                    'P': 15,  # Reliability Rating
-                    'Q': 20,  # Maintainability Rating
-                    'R': 15,  # Lines of Code
-                    'S': 20,  # Cognitive Complexity
-                    'T': 15,  # Technical Debt
-                    'U': 20   # Last Analysis
-                }
-                
-                for col, width in column_widths.items():
-                    worksheet.column_dimensions[col].width = width
-                
-                # Format header row
-                header_font = Font(bold=True)
-                header_fill = PatternFill(
-                    start_color='CCE5FF',
-                    end_color='CCE5FF',
-                    fill_type='solid'
-                )
-                header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                
-                for cell in worksheet[1]:
-                    cell.font = header_font
-                    cell.fill = header_fill
-                    cell.alignment = header_alignment
-                
-                # Format data cells
-                for row in worksheet.iter_rows(min_row=2):
-                    for cell in row:
-                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            # Format all data cells
+            for row in range(2, summary_sheet.max_row + 1):
+                for col in range(last_col, last_col + len(sonar_headers)):
+                    cell = summary_sheet.cell(row=row, column=col)
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
-            logging.info(f"Successfully enriched analysis with SonarQube data: {output_file}")
+            # Save the workbook
+            workbook.save(analysis_file)
+            logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
             
         except Exception as e:
-            logging.error(f"Error enriching GitHub analysis with SonarQube data: {str(e)}")
+            logging.error(f"Error enriching analysis file with SonarQube data: {str(e)}")
             raise
 
 def main():
@@ -295,14 +263,11 @@ def main():
     # Get the most recent file
     latest_file = max(analysis_files, key=os.path.getctime)
     
-    # Create output filename
-    output_file = latest_file.replace('.xlsx', '_with_sonar.xlsx')
-    
     # Initialize SonarQube analyzer
     analyzer = SonarQubeAnalyzer(sonar_url, sonar_token)
     
-    # Enrich GitHub analysis with SonarQube data
-    analyzer.enrich_github_analysis(latest_file, output_file)
+    # Enrich the analysis file with SonarQube data
+    analyzer.enrich_analysis_file(latest_file)
 
 if __name__ == "__main__":
     main() 
