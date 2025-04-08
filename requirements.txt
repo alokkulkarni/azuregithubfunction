@@ -1,3 +1,5 @@
 azure-functions
 requests
-python-dotenv 
+python-dotenv
+pandas
+openpyxl
