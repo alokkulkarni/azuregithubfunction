@@ -962,6 +962,10 @@ class CodeQualityAnalyzer:
                     match = re.search(r'Deletion ratio: ([\d.]+)', details)
                     if match:
                         value = match.group(1)
+                elif metric_name == 'Max Branch Age':
+                    match = re.search(r'Oldest branch: (\d+) days', details)
+                    if match:
+                        value = f"{match.group(1)} days"
             
             metrics_data['Value'].append(value)
             
@@ -1013,7 +1017,15 @@ class CodeQualityAnalyzer:
         elif section == 'Branch Complexity':
             branch_count = int(comp.get('your_branch_count', '0').replace('N/A', '0'))
             max_age = comp.get('your_max_age', '0 days')
-            max_age_days = int(max_age.split()[0]) if 'days' in max_age else 0
+            
+            # Safely parse the max age value
+            try:
+                if isinstance(max_age, str) and 'days' in max_age:
+                    max_age_days = int(''.join(c for c in max_age.split()[0] if c.isdigit()) or '0')
+                else:
+                    max_age_days = 0
+            except (ValueError, IndexError):
+                max_age_days = 0
             
             if branch_count > 8:
                 recommendations.append("Reduce number of active branches by implementing trunk-based development")
@@ -1045,14 +1057,23 @@ class CodeQualityAnalyzer:
         for section, details in assessment_details.items():
             comp = details.get('industry_comparison', {})
             if section == 'commit_frequency':
-                if comp.get('your_variance', '0') != 'N/A' and float(comp['your_variance']) > 10:
+                if comp.get('your_variance', '0') != 'N/A' and float(comp['your_variance'].replace('N/A', '0')) > 10:
                     overall_issues.add('high_commit_variance')
             elif section == 'code_churn':
-                if comp.get('your_deletion_ratio', '0') != 'N/A' and float(comp['your_deletion_ratio']) > 1.0:
+                if comp.get('your_deletion_ratio', '0') != 'N/A' and float(comp['your_deletion_ratio'].replace('N/A', '0')) > 1.0:
                     overall_issues.add('high_deletion_ratio')
             elif section == 'branch_patterns':
-                if comp.get('your_max_age', '0 days').split()[0].isdigit() and int(comp['your_max_age'].split()[0]) > 14:
-                    overall_issues.add('long_lived_branches')
+                max_age = comp.get('your_max_age', '0 days')
+                try:
+                    if isinstance(max_age, str) and 'days' in max_age:
+                        max_age_days = int(''.join(c for c in max_age.split()[0] if c.isdigit()) or '0')
+                    else:
+                        max_age_days = 0
+                    
+                    if max_age_days > 14:
+                        overall_issues.add('long_lived_branches')
+                except (ValueError, IndexError):
+                    logging.warning(f"Could not parse branch age value: {max_age}")
         
         # Add overall recommendations
         if overall_issues:
