@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import pandas as pd
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 from github_insights import GitHubInsights
@@ -9,6 +10,9 @@ from sonarqube_analyzer import SonarQubeAnalyzer
 from nexus_iq_analyzer import NexusIQAnalyzer
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Any, Optional
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -29,376 +33,179 @@ class OrgRepoScanner:
         self.insights_client = GitHubInsights(token, org)
         self.sonar_analyzer = SonarQubeAnalyzer(sonar_url, sonar_token)
         self.nexus_analyzer = NexusIQAnalyzer(nexus_url, nexus_username, nexus_password)
+        self.checkpoint_file = f"{org}_scan_checkpoint.json"
+        self.results_file = f"{org}_scan_results.json"
 
-    def check_repo_content(self, repo_name: str) -> dict:
-        """Check if repository has any code files."""
+    def load_checkpoint(self) -> tuple[Optional[int], List[Dict]]:
+        """Load checkpoint data if it exists."""
         try:
-            url = f'{self.base_url}/repos/{self.org}/{repo_name}/contents'
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            
-            contents = response.json()
-            if not contents:
-                return {'has_content': False, 'content_type': 'Empty'}
-            
-            # Check for code files - comprehensive list of programming language extensions
-            code_extensions = {
-                # Web Development
-                '.html', '.htm', '.css', '.scss', '.sass', '.less', '.jsx', '.tsx',
-                '.vue', '.svelte', '.json', '.xml', '.yaml', '.yml',
-                
-                # JavaScript/TypeScript
-                '.js', '.ts', '.mjs', '.cjs', '.map', '.coffee',
-                
-                # Python
-                '.py', '.pyx', '.pxd', '.pxi', '.pyc', '.pyd', '.pyo',
-                '.ipynb', '.rpy',
-                
-                # Java/Kotlin/Scala
-                '.java', '.kt', '.kts', '.scala', '.sc', '.gradle',
-                
-                # C/C++
-                '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx',
-                
-                # C#/.NET
-                '.cs', '.vb', '.fs', '.fsx', '.xaml', '.cshtml', '.csproj',
-                
-                # Ruby
-                '.rb', '.rake', '.gemspec', '.rbx', '.rjs', '.erb',
-                
-                # PHP
-                '.php', '.phtml', '.php3', '.php4', '.php5', '.phps',
-                
-                # Go
-                '.go', '.mod', '.sum',
-                
-                # Rust
-                '.rs', '.rlib',
-                
-                # Swift/Objective-C
-                '.swift', '.m', '.mm',
-                
-                # Shell/Bash
-                '.sh', '.bash', '.zsh', '.fish',
-                
-                # Dart/Flutter
-                '.dart',
-                
-                # R
-                '.r', '.rmd',
-                
-                # Lua
-                '.lua',
-                
-                # Perl
-                '.pl', '.pm', '.t',
-                
-                # SQL
-                '.sql', '.mysql', '.pgsql', '.sqlite',
-                
-                # Other
-                '.asm', '.s', '.groovy', '.tcl', '.elm', '.ex', '.exs',
-                '.erl', '.hrl', '.clj', '.cls', '.f90', '.f95', '.f03',
-                '.ml', '.mli', '.hs', '.lhs', '.v', '.vh'
-            }
-            
-            has_code = any(
-                any(item.get('name', '').lower().endswith(ext) for ext in code_extensions)
-                for item in contents if isinstance(item, dict)
-            )
-            
-            return {
-                'has_content': True,
-                'content_type': 'Contains Code' if has_code else 'No Code Files'
-            }
+            if os.path.exists(self.checkpoint_file):
+                with open(self.checkpoint_file, 'r') as f:
+                    checkpoint = json.load(f)
+                    return checkpoint.get('last_page', 0), checkpoint.get('processed_repos', [])
+            return 0, []
         except Exception as e:
-            logging.error(f"Error checking content for {repo_name}: {str(e)}")
-            return {'has_content': False, 'content_type': 'Error checking content'}
+            logging.error(f"Error loading checkpoint: {str(e)}")
+            return 0, []
 
-    def get_all_repos(self) -> list:
-        """Get all repositories in the organization."""
-        repos = []
-        page = 1
-        per_page = 100  # Maximum allowed by GitHub API
-
-        while True:
-            url = f'{self.base_url}/orgs/{self.org}/repos'
-            params = {
-                'per_page': per_page,
-                'page': page,
-                'sort': 'updated',
-                'direction': 'desc'
-            }
-            
-            try:
-                response = requests.get(url, headers=self.headers, params=params)
-                response.raise_for_status()
-                page_repos = response.json()
-                
-                if not page_repos:
-                    break
-                
-                repos.extend(page_repos)
-                logging.info(f"Fetched {len(page_repos)} repositories from page {page}")
-                
-                if len(page_repos) < per_page:
-                    break
-                    
-                page += 1
-                
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Error fetching repositories: {str(e)}")
-                break
-
-        return repos
-
-    def get_repo_insights(self, repo: dict) -> dict:
-        """Get comprehensive insights for a repository."""
-        if not repo or not isinstance(repo, dict):
-            logging.error("Invalid repository data received")
-            return None
-
-        repo_name = repo.get('name')
-        if not repo_name:
-            logging.error("Repository name not found in data")
-            return None
-
-        logging.info(f"Processing repository: {repo_name}")
-        
-        # Initialize insights with default values
-        insights = {
-            'Repository': repo_name,
-            'Description': repo.get('description', ''),
-            'Created At': repo.get('created_at', ''),
-            'Updated At': repo.get('updated_at', ''),
-            'Last Push': repo.get('pushed_at', ''),
-            'Is Archived': repo.get('archived', False),
-            'Is Private': repo.get('private', False),
-            'Default Branch': repo.get('default_branch', ''),
-            'License': '',
-            'Stars': repo.get('stargazers_count', 0),
-            'Forks': repo.get('forks_count', 0),
-            'Watchers': repo.get('watchers_count', 0),
-            'Open Issues': repo.get('open_issues_count', 0),
-            'Size (KB)': repo.get('size', 0),
-            'Language': repo.get('language', ''),
-            'Last Commit SHA': '',
-            'Last Commit Message': '',
-            'Last Commit Author': '',
-            'Last Commit Date': '',
-            'Top Contributors': '',
-            'Total Contributors': 0,
-            'Open PRs': 0,
-            'Closed PRs': 0,
-            'Has Content': '',
-            'Content Type': '',
-            'Processed At': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-
+    def save_checkpoint(self, last_page: int, processed_repos: List[Dict]):
+        """Save checkpoint data."""
         try:
-            # Check repository content
-            content_info = self.check_repo_content(repo_name)
-            insights['Has Content'] = content_info['has_content']
-            insights['Content Type'] = content_info['content_type']
+            checkpoint_data = {
+                'last_page': last_page,
+                'processed_repos': processed_repos,
+                'timestamp': datetime.now().isoformat()
+            }
+            with open(self.checkpoint_file, 'w') as f:
+                json.dump(checkpoint_data, f)
+        except Exception as e:
+            logging.error(f"Error saving checkpoint: {str(e)}")
 
-            # Safely get license information
-            license_info = repo.get('license') or {}
-            if isinstance(license_info, dict):
-                insights['License'] = license_info.get('name', '')
+    def save_results(self, results: List[Dict]):
+        """Save current results to file."""
+        try:
+            with open(self.results_file, 'w') as f:
+                json.dump(results, f)
+        except Exception as e:
+            logging.error(f"Error saving results: {str(e)}")
+
+    def process_repository(self, repo: Dict) -> Optional[Dict]:
+        """Process a single repository with all analyzers."""
+        try:
+            repo_name = repo.get('name')
+            if not repo_name:
+                return None
+
+            logging.info(f"Processing repository: {repo_name}")
+            
+            # Get GitHub insights
+            insights = self.get_repo_insights(repo)
+            if not insights:
+                return None
+
+            # Get SonarQube data
+            project_key = repo_name.lower()
+            if project_info := self.sonar_analyzer.get_project_info(project_key):
+                sonar_metrics = self.sonar_analyzer.get_project_metrics(project_key)
+                insights.update({
+                    'SonarQube Status': 'Active',
+                    'Quality Gate': sonar_metrics['quality_gate_status'],
+                    'Bugs': sonar_metrics['bugs'],
+                    'Vulnerabilities': sonar_metrics['vulnerabilities'],
+                    'Code Smells': sonar_metrics['code_smells'],
+                    'Coverage (%)': f"{sonar_metrics['coverage']:.1f}",
+                    'Duplication (%)': f"{sonar_metrics['duplicated_lines_density']:.1f}",
+                    'Security Rating': sonar_metrics['security_rating'],
+                    'Reliability Rating': sonar_metrics['reliability_rating'],
+                    'Maintainability Rating': sonar_metrics['sqale_rating'],
+                    'Lines of Code': sonar_metrics['lines_of_code'],
+                    'Cognitive Complexity': sonar_metrics['cognitive_complexity'],
+                    'Technical Debt': sonar_metrics['technical_debt'],
+                    'Test Success (%)': f"{sonar_metrics['test_success_density']:.1f}",
+                    'Test Failures': sonar_metrics['test_failures'],
+                    'Test Errors': sonar_metrics['test_errors'],
+                    'Last Analysis': sonar_metrics['last_analysis']
+                })
             else:
-                insights['License'] = ''
+                insights['SonarQube Status'] = 'Not Found'
 
-            # Get additional insights using GitHubInsights
-            try:
-                repo_insights = self.insights_client.get_insights(repo_name)
-            except Exception as e:
-                logging.error(f"Error getting insights from GitHubInsights for {repo_name}: {str(e)}")
-                repo_insights = None
+            # Get Nexus IQ data
+            if app_info := self.nexus_analyzer.get_application_info(repo_name):
+                nexus_metrics = self.nexus_analyzer.get_security_metrics(app_info['id'])
+                insights.update({
+                    'Nexus IQ Status': 'Active',
+                    'Critical Issues': nexus_metrics['critical_issues'],
+                    'Severe Issues': nexus_metrics['severe_issues'],
+                    'Moderate Issues': nexus_metrics['moderate_issues'],
+                    'Low Issues': nexus_metrics['low_issues'],
+                    'Policy Violations': nexus_metrics['policy_violations'],
+                    'Security Violations': nexus_metrics['security_violations'],
+                    'License Violations': nexus_metrics['license_violations'],
+                    'Quality Violations': nexus_metrics['quality_violations'],
+                    'Total Components': nexus_metrics['total_components'],
+                    'Vulnerable Components': nexus_metrics['vulnerable_components'],
+                    'Risk Score': f"{nexus_metrics['risk_score']:.1f}",
+                    'Policy Action': nexus_metrics['policy_action'],
+                    'Last Scan': nexus_metrics['last_scan_date'],
+                    'Evaluated Components': nexus_metrics['evaluated_components']
+                })
+            else:
+                insights['Nexus IQ Status'] = 'Not Found'
 
-            if repo_insights and isinstance(repo_insights, dict):
-                # Update last commit information
-                last_commit = repo_insights.get('last_commit') or {}
-                if isinstance(last_commit, dict):
-                    insights['Last Commit SHA'] = last_commit.get('sha', '')[:7] if last_commit.get('sha') else ''
-                    insights['Last Commit Message'] = last_commit.get('message', '')
-                    insights['Last Commit Author'] = last_commit.get('author', '')
-                    insights['Last Commit Date'] = last_commit.get('date', '')
-
-                # Update contributors information
-                contributors = repo_insights.get('contributors') or []
-                if isinstance(contributors, list):
-                    insights['Total Contributors'] = len(contributors)
-                    top_contributors = []
-                    for c in contributors[:5]:
-                        if isinstance(c, dict):
-                            login = c.get('login', '')
-                            contributions = c.get('contributions', 0)
-                            if login:
-                                top_contributors.append(f"{login} ({contributions})")
-                    insights['Top Contributors'] = ', '.join(top_contributors)
-
-            # Get PR counts
-            try:
-                pr_url = f'{self.base_url}/repos/{self.org}/{repo_name}/pulls'
-                pr_params = {'state': 'all', 'per_page': 1}
-                pr_response = requests.get(pr_url, headers=self.headers, params=pr_params)
-                
-                if pr_response.status_code == 200:
-                    link_header = pr_response.headers.get('Link', '')
-                    if 'rel="last"' in link_header:
-                        try:
-                            last_page = int(link_header.split('page=')[-1].split('>')[0])
-                            insights['Closed PRs'] = last_page
-                        except (ValueError, IndexError) as e:
-                            logging.error(f"Error parsing PR count for {repo_name}: {str(e)}")
-                            insights['Closed PRs'] = 0
-                    else:
-                        pr_data = pr_response.json()
-                        insights['Closed PRs'] = len(pr_data) if isinstance(pr_data, list) else 0
-
-                # Get open PRs
-                pr_params['state'] = 'open'
-                open_prs = requests.get(pr_url, headers=self.headers, params=pr_params)
-                if open_prs.status_code == 200:
-                    pr_data = open_prs.json()
-                    insights['Open PRs'] = len(pr_data) if isinstance(pr_data, list) else 0
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Error fetching PR data for {repo_name}: {str(e)}")
-                insights['Open PRs'] = 0
-                insights['Closed PRs'] = 0
+            return insights
 
         except Exception as e:
-            logging.error(f"Error getting insights for {repo_name}: {str(e)}")
-            insights['Processed At'] = f"Error: {str(e)}"
+            logging.error(f"Error processing repository {repo.get('name', 'unknown')}: {str(e)}")
+            return None
 
-        # Ensure all string values are empty strings instead of None
-        for key, value in insights.items():
-            if value is None:
-                insights[key] = ''
-
-        return insights
+    def process_page(self, repos: List[Dict]) -> List[Dict]:
+        """Process a page of repositories in parallel."""
+        results = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_repo = {executor.submit(self.process_repository, repo): repo for repo in repos}
+            for future in as_completed(future_to_repo):
+                repo = future_to_repo[future]
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    logging.error(f"Error processing {repo.get('name', 'unknown')}: {str(e)}")
+        return results
 
     def scan_and_export(self, output_file: str) -> None:
-        """Scan all repositories and export insights to Excel."""
+        """Scan all repositories and export insights to Excel with parallel processing and resume capability."""
         try:
-            # Get all repositories
-            repos = self.get_all_repos()
-            if not repos:
-                logging.error("No repositories found or error fetching repositories")
-                return
+            # Load checkpoint
+            last_processed_page, processed_repos = self.load_checkpoint()
+            
+            # Continue from where we left off
+            page = last_processed_page + 1
+            per_page = 100
 
-            # Process each repository
-            insights_list = []
-            for repo in repos:
-                if insights := self.get_repo_insights(repo):
-                    insights_list.append(insights)
-
-            # Convert to DataFrame
-            df = pd.DataFrame(insights_list)
-
-            # Add SonarQube data
-            sonar_columns = [
-                'SonarQube Status',
-                'Quality Gate',
-                'Bugs',
-                'Vulnerabilities',
-                'Code Smells',
-                'Coverage (%)',
-                'Duplication (%)',
-                'Security Rating',
-                'Reliability Rating',
-                'Maintainability Rating',
-                'Lines of Code',
-                'Cognitive Complexity',
-                'Technical Debt',
-                'Test Success (%)',
-                'Test Failures',
-                'Test Errors',
-                'Last Analysis'
-            ]
-
-            # Initialize SonarQube columns with 'N/A'
-            for col in sonar_columns:
-                df[col] = 'N/A'
-
-            # Add Nexus IQ columns
-            nexus_columns = [
-                'Nexus IQ Status',
-                'Critical Issues',
-                'Severe Issues',
-                'Moderate Issues',
-                'Low Issues',
-                'Policy Violations',
-                'Security Violations',
-                'License Violations',
-                'Quality Violations',
-                'Total Components',
-                'Vulnerable Components',
-                'Risk Score',
-                'Policy Action',
-                'Last Scan',
-                'Evaluated Components'
-            ]
-
-            # Initialize Nexus IQ columns with 'N/A'
-            for col in nexus_columns:
-                df[col] = 'N/A'
-
-            # Process each repository for SonarQube and Nexus IQ data
-            for idx, row in df.iterrows():
-                repo_name = row['Repository']
-                if pd.notna(repo_name):
-                    # Process SonarQube data
-                    project_key = f"{repo_name}".lower()
-                    logging.info(f"Processing SonarQube data for: {repo_name}")
+            all_results = processed_repos
+            while True:
+                # Fetch repositories for current page
+                url = f'{self.base_url}/orgs/{self.org}/repos'
+                params = {
+                    'per_page': per_page,
+                    'page': page,
+                    'sort': 'updated',
+                    'direction': 'desc'
+                }
+                
+                try:
+                    response = requests.get(url, headers=self.headers, params=params)
+                    response.raise_for_status()
+                    repos = response.json()
                     
-                    if project_info := self.sonar_analyzer.get_project_info(project_key):
-                        metrics = self.sonar_analyzer.get_project_metrics(project_key)
+                    if not repos:
+                        break
+                    
+                    logging.info(f"Processing page {page} with {len(repos)} repositories")
+                    
+                    # Process current page in parallel
+                    page_results = self.process_page(repos)
+                    all_results.extend(page_results)
+                    
+                    # Save checkpoint after each page
+                    self.save_checkpoint(page, all_results)
+                    self.save_results(all_results)
+                    
+                    if len(repos) < per_page:
+                        break
                         
-                        # Update DataFrame with SonarQube metrics
-                        df.at[idx, 'SonarQube Status'] = 'Active'
-                        df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
-                        df.at[idx, 'Bugs'] = metrics['bugs']
-                        df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
-                        df.at[idx, 'Code Smells'] = metrics['code_smells']
-                        df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
-                        df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
-                        df.at[idx, 'Security Rating'] = metrics['security_rating']
-                        df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
-                        df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
-                        df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
-                        df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
-                        df.at[idx, 'Technical Debt'] = metrics['technical_debt']
-                        df.at[idx, 'Test Success (%)'] = f"{metrics['test_success_density']:.1f}"
-                        df.at[idx, 'Test Failures'] = metrics['test_failures']
-                        df.at[idx, 'Test Errors'] = metrics['test_errors']
-                        df.at[idx, 'Last Analysis'] = metrics['last_analysis']
-                    else:
-                        df.at[idx, 'SonarQube Status'] = 'Not Found'
+                    page += 1
+                    
+                except Exception as e:
+                    logging.error(f"Error processing page {page}: {str(e)}")
+                    # Save checkpoint before exiting
+                    self.save_checkpoint(page - 1, all_results)
+                    self.save_results(all_results)
+                    raise
 
-                    # Process Nexus IQ data
-                    logging.info(f"Processing Nexus IQ data for: {repo_name}")
-                    if app_info := self.nexus_analyzer.get_application_info(repo_name):
-                        metrics = self.nexus_analyzer.get_security_metrics(app_info['id'])
-                        
-                        # Update DataFrame with Nexus IQ metrics
-                        df.at[idx, 'Nexus IQ Status'] = 'Active'
-                        df.at[idx, 'Critical Issues'] = metrics['critical_issues']
-                        df.at[idx, 'Severe Issues'] = metrics['severe_issues']
-                        df.at[idx, 'Moderate Issues'] = metrics['moderate_issues']
-                        df.at[idx, 'Low Issues'] = metrics['low_issues']
-                        df.at[idx, 'Policy Violations'] = metrics['policy_violations']
-                        df.at[idx, 'Security Violations'] = metrics['security_violations']
-                        df.at[idx, 'License Violations'] = metrics['license_violations']
-                        df.at[idx, 'Quality Violations'] = metrics['quality_violations']
-                        df.at[idx, 'Total Components'] = metrics['total_components']
-                        df.at[idx, 'Vulnerable Components'] = metrics['vulnerable_components']
-                        df.at[idx, 'Risk Score'] = f"{metrics['risk_score']:.1f}"
-                        df.at[idx, 'Policy Action'] = metrics['policy_action']
-                        df.at[idx, 'Last Scan'] = metrics['last_scan_date']
-                        df.at[idx, 'Evaluated Components'] = metrics['evaluated_components']
-                    else:
-                        df.at[idx, 'Nexus IQ Status'] = 'Not Found'
+            # Convert results to DataFrame
+            df = pd.DataFrame(all_results)
 
             # Save to Excel with formatting
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
@@ -423,6 +230,12 @@ class OrgRepoScanner:
                         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
             logging.info(f"Successfully exported insights to {output_file}")
+            
+            # Clean up checkpoint files after successful completion
+            if os.path.exists(self.checkpoint_file):
+                os.remove(self.checkpoint_file)
+            if os.path.exists(self.results_file):
+                os.remove(self.results_file)
             
         except Exception as e:
             logging.error(f"Error in scan_and_export: {str(e)}")
