@@ -249,25 +249,30 @@ def main():
     # Get required environment variables
     sonar_url = os.getenv('SONAR_URL', 'http://localhost:9000')
     sonar_token = os.getenv('SONAR_TOKEN')
+    github_org = os.getenv('GITHUB_ORG')
     
     if not sonar_token:
         logging.error("Missing required environment variable: SONAR_TOKEN")
         return
     
-    # Find the most recent GitHub analysis file
-    analysis_files = [f for f in os.listdir('.') if f.endswith('.xlsx') and 'code_quality_analysis' in f]
-    if not analysis_files:
-        logging.error("No GitHub analysis file found")
+    if not github_org:
+        logging.error("Missing required environment variable: GITHUB_ORG")
         return
     
-    # Get the most recent file
-    latest_file = max(analysis_files, key=os.path.getctime)
+    # Look for the Excel file with org name pattern
+    excel_filename = f"{github_org}_repository_insights.xlsx"
+    
+    if not os.path.exists(excel_filename):
+        logging.error(f"Excel file not found: {excel_filename}")
+        return
+    
+    logging.info(f"Found analysis file: {excel_filename}")
     
     # Initialize SonarQube analyzer
     analyzer = SonarQubeAnalyzer(sonar_url, sonar_token)
     
     # Enrich the analysis file with SonarQube data
-    analyzer.enrich_analysis_file(latest_file)
+    analyzer.enrich_analysis_file(excel_filename)
 
 if __name__ == "__main__":
     main() 
