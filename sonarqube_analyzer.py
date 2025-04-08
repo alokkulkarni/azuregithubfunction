@@ -165,14 +165,22 @@ class SonarQubeAnalyzer:
         """Enrich existing analysis file with SonarQube data."""
         workbook = None
         try:
-            # Create a backup of the original file
-            backup_file = f"{analysis_file}.bak"
+            # Create a backup of the original file with .xlsx extension
+            backup_file = f"{os.path.splitext(analysis_file)[0]}_backup.xlsx"
             if os.path.exists(analysis_file):
                 os.replace(analysis_file, backup_file)
                 logging.info(f"Created backup file: {backup_file}")
+            else:
+                raise FileNotFoundError(f"Original file not found: {analysis_file}")
             
             # Read the backup file
-            workbook = openpyxl.load_workbook(backup_file)
+            try:
+                workbook = openpyxl.load_workbook(backup_file)
+            except Exception as load_error:
+                logging.error(f"Error loading Excel file: {str(load_error)}")
+                # Restore the original file if we can't load the backup
+                os.replace(backup_file, analysis_file)
+                raise load_error
             
             # Get the first sheet (assuming it's the main analysis sheet)
             sheet_names = workbook.sheetnames
@@ -275,8 +283,9 @@ class SonarQubeAnalyzer:
                 logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
                 
                 # Remove the backup file if save was successful
-                os.remove(backup_file)
-                logging.info("Removed backup file after successful save")
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
+                    logging.info("Removed backup file after successful save")
                 
             except Exception as save_error:
                 logging.error(f"Error saving enriched file: {str(save_error)}")
