@@ -19,9 +19,9 @@ class SonarQubeAnalyzer:
     
     def __init__(self, sonar_url: str, sonar_token: str):
         self.base_url = sonar_url.rstrip('/')
-        self.auth = (sonar_token, '')
         self.headers = {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {sonar_token}'
         }
 
     def get_project_info(self, project_key: str) -> Optional[Dict]:
@@ -31,7 +31,7 @@ class SonarQubeAnalyzer:
             params = {
                 'q': project_key
             }
-            response = requests.get(url, auth=self.auth, headers=self.headers, params=params)
+            response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -73,7 +73,7 @@ class SonarQubeAnalyzer:
                              'security_rating,reliability_rating,sqale_rating,ncloc,cognitive_complexity,'
                              'sqale_index,test_success_density,test_failures,test_errors')
             }
-            response = requests.get(url, auth=self.auth, headers=self.headers, params=params)
+            response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -100,7 +100,7 @@ class SonarQubeAnalyzer:
             # Get quality gate status
             url = f"{self.base_url}/api/qualitygates/project_status"
             params = {'projectKey': project_key}
-            response = requests.get(url, auth=self.auth, headers=self.headers, params=params)
+            response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -112,7 +112,7 @@ class SonarQubeAnalyzer:
                 'project': project_key,
                 'ps': 1  # Get only the latest analysis
             }
-            response = requests.get(url, auth=self.auth, headers=self.headers, params=params)
+            response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             
             data = response.json()
