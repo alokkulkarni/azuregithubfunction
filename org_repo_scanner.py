@@ -34,10 +34,69 @@ class OrgRepoScanner:
             if not contents:
                 return {'has_content': False, 'content_type': 'Empty'}
             
-            # Check for code files
-            code_extensions = {'.py', '.js', '.java', '.cpp', '.cs', '.go', '.rb', '.php', '.ts', '.swift'}
+            # Check for code files - comprehensive list of programming language extensions
+            code_extensions = {
+                # Web Development
+                '.html', '.htm', '.css', '.scss', '.sass', '.less', '.jsx', '.tsx',
+                '.vue', '.svelte', '.json', '.xml', '.yaml', '.yml',
+                
+                # JavaScript/TypeScript
+                '.js', '.ts', '.mjs', '.cjs', '.map', '.coffee',
+                
+                # Python
+                '.py', '.pyx', '.pxd', '.pxi', '.pyc', '.pyd', '.pyo',
+                '.ipynb', '.rpy',
+                
+                # Java/Kotlin/Scala
+                '.java', '.kt', '.kts', '.scala', '.sc', '.gradle',
+                
+                # C/C++
+                '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx',
+                
+                # C#/.NET
+                '.cs', '.vb', '.fs', '.fsx', '.xaml', '.cshtml', '.csproj',
+                
+                # Ruby
+                '.rb', '.rake', '.gemspec', '.rbx', '.rjs', '.erb',
+                
+                # PHP
+                '.php', '.phtml', '.php3', '.php4', '.php5', '.phps',
+                
+                # Go
+                '.go', '.mod', '.sum',
+                
+                # Rust
+                '.rs', '.rlib',
+                
+                # Swift/Objective-C
+                '.swift', '.m', '.mm',
+                
+                # Shell/Bash
+                '.sh', '.bash', '.zsh', '.fish',
+                
+                # Dart/Flutter
+                '.dart',
+                
+                # R
+                '.r', '.rmd',
+                
+                # Lua
+                '.lua',
+                
+                # Perl
+                '.pl', '.pm', '.t',
+                
+                # SQL
+                '.sql', '.mysql', '.pgsql', '.sqlite',
+                
+                # Other
+                '.asm', '.s', '.groovy', '.tcl', '.elm', '.ex', '.exs',
+                '.erl', '.hrl', '.clj', '.cls', '.f90', '.f95', '.f03',
+                '.ml', '.mli', '.hs', '.lhs', '.v', '.vh'
+            }
+            
             has_code = any(
-                any(item.get('name', '').endswith(ext) for ext in code_extensions)
+                any(item.get('name', '').lower().endswith(ext) for ext in code_extensions)
                 for item in contents if isinstance(item, dict)
             )
             
