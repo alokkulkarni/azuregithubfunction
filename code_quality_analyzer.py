@@ -77,6 +77,29 @@ class IndustryStandards:
         }
     }
     
+    ABERRANCY_STANDARDS = {
+        'excellent': {
+            'score_range': (0, 20),
+            'description': 'Minimal deviation from best practices',
+            'risk_level': 'Low Risk'
+        },
+        'good': {
+            'score_range': (20, 40),
+            'description': 'Minor deviations from best practices',
+            'risk_level': 'Moderate Risk'
+        },
+        'average': {
+            'score_range': (40, 60),
+            'description': 'Notable deviations from best practices',
+            'risk_level': 'Medium Risk'
+        },
+        'below_average': {
+            'score_range': (60, 100),
+            'description': 'Significant deviations from best practices',
+            'risk_level': 'High Risk'
+        }
+    }
+    
     @staticmethod
     def get_commit_rating(avg_weekly_commits: float, variance: float) -> Dict[str, Any]:
         """Get rating based on commit patterns."""
@@ -130,6 +153,23 @@ class IndustryStandards:
             'description': IndustryStandards.BRANCH_STANDARDS['description']['below_average'],
             'industry_max_branches': IndustryStandards.BRANCH_STANDARDS['complexity']['average']['max_branches'],
             'industry_max_age': IndustryStandards.BRANCH_STANDARDS['complexity']['average']['max_age_days']
+        }
+
+    @staticmethod
+    def get_aberrancy_rating(aberrancy_score: float) -> Dict[str, Any]:
+        """Get rating based on aberrancy score."""
+        for rating, criteria in IndustryStandards.ABERRANCY_STANDARDS.items():
+            min_score, max_score = criteria['score_range']
+            if min_score <= aberrancy_score < max_score:
+                return {
+                    'rating': rating,
+                    'description': criteria['description'],
+                    'risk_level': criteria['risk_level']
+                }
+        return {
+            'rating': 'below_average',
+            'description': IndustryStandards.ABERRANCY_STANDARDS['below_average']['description'],
+            'risk_level': IndustryStandards.ABERRANCY_STANDARDS['below_average']['risk_level']
         }
 
 class MetricDefinitions:
@@ -563,6 +603,42 @@ class CodeQualityAnalyzer:
             aberrancy_metrics['branch_complexity_score'] * 0.3
         )
 
+        # Get aberrancy rating and risk factors
+        aberrancy_rating = IndustryStandards.get_aberrancy_rating(aberrancy_metrics['overall_aberrancy_score'])
+        
+        # Calculate risk factors based on scores and thresholds
+        risk_factors = []
+        
+        # Commit frequency risks
+        if aberrancy_metrics['commit_frequency_score'] < 40:
+            risk_factors.append("Irregular commit patterns indicating potential process issues")
+        
+        # Code churn risks
+        if aberrancy_metrics['code_churn_score'] < 40:
+            risk_factors.append("High code churn suggesting potential instability")
+        
+        # Branch complexity risks
+        if aberrancy_metrics['branch_complexity_score'] < 40:
+            risk_factors.append("Complex branching strategy with potential integration challenges")
+            
+        # Add specific risk factors based on assessment details
+        for category, details in aberrancy_metrics['assessment_details'].items():
+            comp = details.get('industry_comparison', {})
+            if category == 'commit_frequency':
+                if comp.get('your_variance') and float(comp['your_variance'].replace('N/A', '0')) > float(comp.get('industry_variance_threshold', '10')):
+                    risk_factors.append("High variance in commit frequency")
+            elif category == 'code_churn':
+                if comp.get('your_deletion_ratio') and float(comp['your_deletion_ratio'].replace('N/A', '0')) > float(comp.get('industry_deletion_ratio', '1.0')):
+                    risk_factors.append("High code deletion ratio")
+            elif category == 'branch_patterns':
+                if comp.get('your_max_age') and 'days' in comp['your_max_age']:
+                    days = float(comp['your_max_age'].split()[0])
+                    if days > float(comp.get('industry_max_age', '30').split()[0]):
+                        risk_factors.append("Long-lived branches detected")
+
+        aberrancy_metrics['risk_factors'] = risk_factors
+        aberrancy_metrics['aberrancy_rating'] = aberrancy_rating
+
         return aberrancy_metrics
 
     def calculate_billable_efforts(self, repo: str) -> Dict[str, Any]:
@@ -638,12 +714,16 @@ class CodeQualityAnalyzer:
         """Export summary data to Excel."""
         summary_data = []
         for analysis in analyses:
+            aberrancy_score = analysis['aberrancy_metrics']['overall_aberrancy_score']
+            aberrancy_rating = analysis['aberrancy_metrics'].get('aberrancy_rating', {})
+            
             summary_data.append({
                 'Repository': analysis['repository'],
                 'Quality Score': round(analysis['quality_metrics']['quality_score'], 2),
-                'Aberrancy Score': round(analysis['aberrancy_metrics']['overall_aberrancy_score'], 2),
+                'Aberrancy Score': round(aberrancy_score, 2),
                 'Industry Rating': self._get_overall_rating(analysis),
-                'Risk Factors': ', '.join(analysis['aberrancy_metrics']['risk_factors']),
+                'Risk Level': aberrancy_rating.get('risk_level', 'N/A'),
+                'Risk Factors': '\n'.join(analysis['aberrancy_metrics']['risk_factors']),
                 'Analyzed At': analysis['analyzed_at']
             })
         
@@ -656,12 +736,27 @@ class CodeQualityAnalyzer:
         worksheet.column_dimensions['B'].width = 15
         worksheet.column_dimensions['C'].width = 15
         worksheet.column_dimensions['D'].width = 20
-        worksheet.column_dimensions['E'].width = 40
-        worksheet.column_dimensions['F'].width = 25
+        worksheet.column_dimensions['E'].width = 15
+        worksheet.column_dimensions['F'].width = 40
+        worksheet.column_dimensions['G'].width = 25
+
+        # Adjust row height for risk factors
+        for idx, row in enumerate(worksheet.iter_rows(min_row=2), start=2):
+            if '\n' in str(row[5].value):  # Risk Factors column
+                worksheet.row_dimensions[idx].height = 15 * (str(row[5].value).count('\n') + 1)
 
     def _export_industry_standards(self, writer: pd.ExcelWriter):
         """Export industry standards to Excel."""
         standards_data = []
+        
+        # Add Aberrancy Standards
+        for rating, criteria in IndustryStandards.ABERRANCY_STANDARDS.items():
+            standards_data.append({
+                'Category': 'Aberrancy Score',
+                'Rating': rating.title(),
+                'Criteria': f"Score Range: {criteria['score_range'][0]}-{criteria['score_range'][1]}",
+                'Description': f"{criteria['description']} ({criteria['risk_level']})"
+            })
         
         # Commit standards
         for rating, criteria in IndustryStandards.COMMIT_STANDARDS['frequency'].items():
@@ -830,12 +925,41 @@ class CodeQualityAnalyzer:
     def _add_metric_section(self, metrics_data: Dict, section: str, assessment: Dict, metric_mappings: List[tuple]):
         """Add a section of metrics to the metrics data dictionary."""
         comp = assessment.get('industry_comparison', {})
+        
+        # Get industry standards based on section
+        industry_standards = self._get_industry_standards(section)
+        
         for metric_name, your_key, industry_key in metric_mappings:
             metrics_data['Section'].append(section)
             metrics_data['Metric'].append(metric_name)
             metrics_data['Value'].append(comp.get(your_key, 'N/A'))
-            metrics_data['Industry Standard'].append(comp.get(industry_key, 'N/A'))
-            metrics_data['Rating'].append(comp.get('rating', 'N/A').title())
+            
+            # Always show industry standard, even if repo metrics couldn't be calculated
+            industry_value = comp.get(industry_key)
+            if industry_value is None:
+                industry_value = industry_standards.get(metric_name, 'N/A')
+            metrics_data['Industry Standard'].append(industry_value)
+            
+            metrics_data['Rating'].append(comp.get('rating', 'Below Average').title())
+
+    def _get_industry_standards(self, section: str) -> Dict[str, str]:
+        """Get industry standards for a given section."""
+        if section == 'Commit Frequency':
+            return {
+                'Weekly Average': '3-15 commits',
+                'Variance': '< 5 (excellent), < 10 (good)'
+            }
+        elif section == 'Code Churn':
+            return {
+                'Weekly Churn': '< 200 (excellent), < 500 (good)',
+                'Deletion Ratio': '< 0.8 (excellent), < 1.0 (good)'
+            }
+        elif section == 'Branch Complexity':
+            return {
+                'Branch Count': '< 5 (excellent), < 8 (good)',
+                'Max Branch Age': '< 7 days (excellent), < 14 days (good)'
+            }
+        return {}
 
     def _get_combined_recommendations(self, assessment_details: Dict) -> str:
         """Combine all recommendations into a single formatted string."""
@@ -907,25 +1031,36 @@ class CodeQualityAnalyzer:
             response.raise_for_status()
             data = response.json()
             
-            # Validate the response structure
-            if not isinstance(data, dict) or 'commit' not in data:
-                logging.error(f"Invalid branch data structure for {repo}/{branch}")
-                return {}
-                
+            # Handle case where commit data might be missing or malformed
+            if not isinstance(data, dict):
+                logging.warning(f"Invalid response data structure for {repo}/{branch}")
+                return {'commit': {'committer': {'date': None}}}
+            
+            if 'commit' not in data:
+                logging.warning(f"Missing commit data for {repo}/{branch}")
+                return {'commit': {'committer': {'date': None}}}
+            
             commit_data = data['commit']
-            if not isinstance(commit_data, dict) or 'committer' not in commit_data:
-                logging.error(f"Invalid commit data structure for {repo}/{branch}")
-                return {}
-                
+            if not isinstance(commit_data, dict):
+                logging.warning(f"Invalid commit data type for {repo}/{branch}")
+                return {'commit': {'committer': {'date': None}}}
+            
+            if 'committer' not in commit_data:
+                logging.warning(f"Missing committer data for {repo}/{branch}")
+                commit_data['committer'] = {'date': None}
+            
             committer = commit_data['committer']
-            if not isinstance(committer, dict) or 'date' not in committer:
-                logging.error(f"Invalid committer data structure for {repo}/{branch}")
-                return {}
-                
+            if not isinstance(committer, dict):
+                logging.warning(f"Invalid committer data type for {repo}/{branch}")
+                commit_data['committer'] = {'date': None}
+            elif 'date' not in committer:
+                logging.warning(f"Missing date in committer data for {repo}/{branch}")
+                committer['date'] = None
+            
             return data
         except Exception as e:
             logging.error(f"Error fetching branch info for {repo}/{branch}: {str(e)}")
-            return {}
+            return {'commit': {'committer': {'date': None}}}
 
     def _get_overall_rating(self, analysis: Dict) -> str:
         """Calculate overall rating based on all metrics."""
