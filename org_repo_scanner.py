@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 from github_insights import GitHubInsights
+from sonarqube_analyzer import SonarQubeAnalyzer
 
 # Configure logging
 logging.basicConfig(
@@ -13,7 +14,7 @@ logging.basicConfig(
 )
 
 class OrgRepoScanner:
-    def __init__(self, token: str, org: str):
+    def __init__(self, token: str, org: str, sonar_url: str, sonar_token: str):
         self.token = token
         self.org = org
         self.headers = {
@@ -22,6 +23,7 @@ class OrgRepoScanner:
         }
         self.base_url = 'https://api.github.com'
         self.insights_client = GitHubInsights(token, org)
+        self.sonar_analyzer = SonarQubeAnalyzer(sonar_url, sonar_token)
 
     def check_repo_content(self, repo_name: str) -> dict:
         """Check if repository has any code files."""
@@ -275,56 +277,126 @@ class OrgRepoScanner:
         """Scan all repositories and export insights to Excel."""
         try:
             # Get all repositories
-            logging.info(f"Fetching all repositories for organization: {self.org}")
             repos = self.get_all_repos()
-            logging.info(f"Found {len(repos)} repositories")
-
-            # Process each repository
-            all_insights = []
-            for repo in repos:
-                insights = self.get_repo_insights(repo)
-                if insights:  # Only add valid insights
-                    all_insights.append(insights)
-
-            if not all_insights:
-                logging.error("No valid repository insights found")
+            if not repos:
+                logging.error("No repositories found or error fetching repositories")
                 return
 
-            # Create DataFrame and export to Excel
-            df = pd.DataFrame(all_insights)
+            # Process each repository
+            insights_list = []
+            for repo in repos:
+                if insights := self.get_repo_insights(repo):
+                    insights_list.append(insights)
+
+            # Convert to DataFrame
+            df = pd.DataFrame(insights_list)
+
+            # Add SonarQube data
+            sonar_columns = [
+                'SonarQube Status',
+                'Quality Gate',
+                'Bugs',
+                'Vulnerabilities',
+                'Code Smells',
+                'Coverage (%)',
+                'Duplication (%)',
+                'Security Rating',
+                'Reliability Rating',
+                'Maintainability Rating',
+                'Lines of Code',
+                'Cognitive Complexity',
+                'Technical Debt',
+                'Test Success (%)',
+                'Test Failures',
+                'Test Errors',
+                'Last Analysis'
+            ]
+
+            # Initialize SonarQube columns with 'N/A'
+            for col in sonar_columns:
+                df[col] = 'N/A'
+
+            # Process each repository for SonarQube data
+            for idx, row in df.iterrows():
+                repo_name = row['Repository']
+                if pd.notna(repo_name):
+                    project_key = f"{repo_name}".lower()
+                    logging.info(f"Processing SonarQube data for: {repo_name}")
+                    
+                    if project_info := self.sonar_analyzer.get_project_info(project_key):
+                        metrics = self.sonar_analyzer.get_project_metrics(project_key)
+                        
+                        # Update DataFrame with metrics
+                        df.at[idx, 'SonarQube Status'] = 'Active'
+                        df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
+                        df.at[idx, 'Bugs'] = metrics['bugs']
+                        df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
+                        df.at[idx, 'Code Smells'] = metrics['code_smells']
+                        df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
+                        df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
+                        df.at[idx, 'Security Rating'] = metrics['security_rating']
+                        df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
+                        df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
+                        df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
+                        df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
+                        df.at[idx, 'Technical Debt'] = metrics['technical_debt']
+                        df.at[idx, 'Test Success (%)'] = f"{metrics['test_success_density']:.1f}"
+                        df.at[idx, 'Test Failures'] = metrics['test_failures']
+                        df.at[idx, 'Test Errors'] = metrics['test_errors']
+                        df.at[idx, 'Last Analysis'] = metrics['last_analysis']
+                    else:
+                        df.at[idx, 'SonarQube Status'] = 'Not Found'
+
+            # Save to Excel with formatting
+            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Repository Insights')
+                
+                # Get the workbook and worksheet for formatting
+                wb = writer.book
+                ws = wb['Repository Insights']
+                
+                # Format headers
+                for col_num, column in enumerate(df.columns, 1):
+                    cell = ws.cell(row=1, column=col_num)
+                    cell.font = Font(bold=True)
+                    cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    ws.column_dimensions[get_column_letter(col_num)].width = 15
+                
+                # Format data cells
+                for row in range(2, len(df) + 2):
+                    for col in range(1, len(df.columns) + 1):
+                        cell = ws.cell(row=row, column=col)
+                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+            logging.info(f"Successfully exported insights to {output_file}")
             
-            # Format datetime columns
-            date_columns = ['Created At', 'Updated At', 'Last Push', 'Last Commit Date']
-            for col in date_columns:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
-
-            # Replace NaN values with empty strings
-            df = df.fillna('')
-
-            # Save to Excel
-            logging.info(f"Saving insights to: {output_file}")
-            df.to_excel(output_file, index=False)
-            logging.info("Export completed successfully")
-
         except Exception as e:
-            logging.error(f"Error during scanning and export: {str(e)}")
+            logging.error(f"Error in scan_and_export: {str(e)}")
+            raise
 
 def main():
+    """Main function to run the repository scanner."""
     # Load environment variables
     load_dotenv()
-    token = os.getenv('GITHUB_TOKEN')
-    org = os.getenv('GITHUB_ORG')
-
-    if not all([token, org]):
+    
+    # Get required environment variables
+    github_token = os.getenv('GITHUB_TOKEN')
+    github_org = os.getenv('GITHUB_ORG')
+    sonar_url = os.getenv('SONAR_URL', 'http://localhost:9000')
+    sonar_token = os.getenv('SONAR_TOKEN')
+    
+    if not all([github_token, github_org, sonar_token]):
         logging.error("Missing required environment variables")
-        logging.error(f"GITHUB_TOKEN present: {bool(token)}")
-        logging.error(f"GITHUB_ORG present: {bool(org)}")
         return
-
-    # Initialize scanner and start processing
-    scanner = OrgRepoScanner(token, org)
-    output_file = f"{org}_repository_insights.xlsx"
+    
+    # Initialize scanner
+    scanner = OrgRepoScanner(github_token, github_org, sonar_url, sonar_token)
+    
+    # Create output filename with organization name
+    output_file = f"{github_org}_repository_insights.xlsx"
+    
+    # Scan repositories and export insights
     scanner.scan_and_export(output_file)
 
 if __name__ == "__main__":
