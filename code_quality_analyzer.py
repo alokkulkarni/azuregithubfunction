@@ -556,13 +556,20 @@ class CodeQualityAnalyzer:
                 now = datetime.now(UTC)
                 branch_ages = []
                 for branch in branches:
-                    if commit_info := self.get_branch_last_commit(repo, branch['name']):
-                        last_commit_date = datetime.strptime(
-                            commit_info['commit']['committer']['date'],
-                            '%Y-%m-%dT%H:%M:%SZ'
-                        ).replace(tzinfo=UTC)
-                        age_days = (now - last_commit_date).days
-                        branch_ages.append(age_days)
+                    try:
+                        commit_info = self.get_branch_last_commit(repo, branch['name'])
+                        if commit_info and commit_info['commit'] and commit_info['commit']['committer']:
+                            commit_date = commit_info['commit']['committer'].get('date')
+                            if commit_date:
+                                last_commit_date = datetime.strptime(
+                                    commit_date,
+                                    '%Y-%m-%dT%H:%M:%SZ'
+                                ).replace(tzinfo=UTC)
+                                age_days = (now - last_commit_date).days
+                                branch_ages.append(age_days)
+                    except Exception as e:
+                        logging.warning(f"Error processing branch {branch['name']} in {repo}: {str(e)}")
+                        continue
                 
                 max_branch_age = max(branch_ages) if branch_ages else 0
                 
@@ -594,8 +601,36 @@ class CodeQualityAnalyzer:
                     f"Oldest branch: {max_branch_age} days "
                     f"(Industry max: {branch_rating['industry_max_age']} days)"
                 )
+            else:
+                # Set default values when no branches are found
+                assessment = aberrancy_metrics['assessment_details']['branch_patterns']
+                assessment['industry_comparison'] = {
+                    'rating': 'excellent',
+                    'description': 'Single branch repository',
+                    'your_branch_count': '1',
+                    'industry_max_branches': '5',
+                    'your_max_age': '0 days',
+                    'industry_max_age': '7 days'
+                }
+                assessment['score'] = 100
+                assessment['details'] = "Single branch repository with no additional branches"
+                aberrancy_metrics['branch_complexity_score'] = 100
+                
         except Exception as e:
             logging.error(f"Error calculating branch complexity for {repo}: {str(e)}")
+            # Set default values on error
+            assessment = aberrancy_metrics['assessment_details']['branch_patterns']
+            assessment['industry_comparison'] = {
+                'rating': 'below_average',
+                'description': 'Unable to analyze branch patterns',
+                'your_branch_count': 'N/A',
+                'industry_max_branches': '5',
+                'your_max_age': 'N/A',
+                'industry_max_age': '7 days'
+            }
+            assessment['score'] = 0
+            assessment['details'] = "Unable to analyze branch patterns"
+            aberrancy_metrics['branch_complexity_score'] = 0
 
         # Calculate overall aberrancy score
         aberrancy_metrics['overall_aberrancy_score'] = 100 - (
@@ -962,6 +997,10 @@ class CodeQualityAnalyzer:
                     match = re.search(r'Deletion ratio: ([\d.]+)', details)
                     if match:
                         value = match.group(1)
+                elif metric_name == 'Branch Count':
+                    match = re.search(r'Active branches: (\d+)', details)
+                    if match:
+                        value = match.group(1)
                 elif metric_name == 'Max Branch Age':
                     match = re.search(r'Oldest branch: (\d+) days', details)
                     if match:
@@ -975,15 +1014,45 @@ class CodeQualityAnalyzer:
                 industry_value = industry_standards.get(metric_name, 'N/A')
             metrics_data['Industry Standard'].append(industry_value)
             
-            # Determine rating based on score
-            if score >= 90:
-                rating = 'Excellent'
-            elif score >= 75:
-                rating = 'Good'
-            elif score >= 60:
-                rating = 'Average'
+            # Determine rating based on score and metric-specific thresholds
+            if section == 'Branch Complexity':
+                if metric_name == 'Branch Count':
+                    try:
+                        count = int(value) if value != 'N/A' else float('inf')
+                        if count <= 5:
+                            rating = 'Excellent'
+                        elif count <= 8:
+                            rating = 'Good'
+                        elif count <= 12:
+                            rating = 'Average'
+                        else:
+                            rating = 'Below Average'
+                    except (ValueError, TypeError):
+                        rating = 'Below Average'
+                elif metric_name == 'Max Branch Age':
+                    try:
+                        days = int(value.split()[0]) if value != 'N/A' else float('inf')
+                        if days <= 7:
+                            rating = 'Excellent'
+                        elif days <= 14:
+                            rating = 'Good'
+                        elif days <= 30:
+                            rating = 'Average'
+                        else:
+                            rating = 'Below Average'
+                    except (ValueError, TypeError, AttributeError):
+                        rating = 'Below Average'
+                else:
+                    rating = 'N/A'
             else:
-                rating = 'Below Average'
+                if score >= 90:
+                    rating = 'Excellent'
+                elif score >= 75:
+                    rating = 'Good'
+                elif score >= 60:
+                    rating = 'Average'
+                else:
+                    rating = 'Below Average'
             
             metrics_data['Rating'].append(rating)
 
@@ -1139,14 +1208,37 @@ class CodeQualityAnalyzer:
 
     def get_branches(self, repo: str) -> List[Dict]:
         """Get repository branches."""
-        url = f'{self.base_url}/repos/{self.org}/{repo}/branches'
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logging.error(f"Error fetching branches for {repo}: {str(e)}")
-            return []
+        branches = []
+        page = 1
+        per_page = 100
+        
+        while True:
+            url = f'{self.base_url}/repos/{self.org}/{repo}/branches'
+            params = {
+                'page': page,
+                'per_page': per_page
+            }
+            
+            try:
+                response = requests.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
+                
+                batch = response.json()
+                if not batch:  # No more branches
+                    break
+                    
+                branches.extend(batch)
+                
+                if len(batch) < per_page:  # Last page
+                    break
+                    
+                page += 1
+                
+            except Exception as e:
+                logging.error(f"Error fetching branches for {repo} (page {page}): {str(e)}")
+                break
+        
+        return branches
 
     def get_branch_last_commit(self, repo: str, branch: str) -> Dict:
         """Get last commit information for a branch."""
@@ -1156,36 +1248,29 @@ class CodeQualityAnalyzer:
             response.raise_for_status()
             data = response.json()
             
-            # Handle case where commit data might be missing or malformed
+            # Validate the response structure
             if not isinstance(data, dict):
                 logging.warning(f"Invalid response data structure for {repo}/{branch}")
-                return {'commit': {'committer': {'date': None}}}
+                return None
             
             if 'commit' not in data:
                 logging.warning(f"Missing commit data for {repo}/{branch}")
-                return {'commit': {'committer': {'date': None}}}
+                return None
             
             commit_data = data['commit']
             if not isinstance(commit_data, dict):
                 logging.warning(f"Invalid commit data type for {repo}/{branch}")
-                return {'commit': {'committer': {'date': None}}}
+                return None
             
             if 'committer' not in commit_data:
                 logging.warning(f"Missing committer data for {repo}/{branch}")
-                commit_data['committer'] = {'date': None}
-            
-            committer = commit_data['committer']
-            if not isinstance(committer, dict):
-                logging.warning(f"Invalid committer data type for {repo}/{branch}")
-                commit_data['committer'] = {'date': None}
-            elif 'date' not in committer:
-                logging.warning(f"Missing date in committer data for {repo}/{branch}")
-                committer['date'] = None
+                return None
             
             return data
+            
         except Exception as e:
             logging.error(f"Error fetching branch info for {repo}/{branch}: {str(e)}")
-            return {'commit': {'committer': {'date': None}}}
+            return None
 
     def _get_overall_rating(self, analysis: Dict) -> str:
         """Calculate overall rating based on all metrics."""
