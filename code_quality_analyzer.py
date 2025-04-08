@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from typing import Dict, List, Any
 import math
 import openpyxl
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -925,51 +926,154 @@ class CodeQualityAnalyzer:
     def _add_metric_section(self, metrics_data: Dict, section: str, assessment: Dict, metric_mappings: List[tuple]):
         """Add a section of metrics to the metrics data dictionary."""
         comp = assessment.get('industry_comparison', {})
+        details = assessment.get('details', '')
+        score = assessment.get('score', 0)
         
         # Get industry standards based on section
         industry_standards = self._get_industry_standards(section)
         
+        # Generate recommendations based on metrics
+        recommendations = assessment.get('recommendations', [])
+        if not recommendations:  # Only generate if not already present
+            recommendations = self._generate_recommendations(section, comp, score)
+            assessment['recommendations'] = recommendations
+        
         for metric_name, your_key, industry_key in metric_mappings:
             metrics_data['Section'].append(section)
             metrics_data['Metric'].append(metric_name)
-            metrics_data['Value'].append(comp.get(your_key, 'N/A'))
             
-            # Always show industry standard, even if repo metrics couldn't be calculated
+            # Get actual value from comparison or extract from details
+            value = comp.get(your_key, 'N/A')
+            if value == 'N/A' and details:
+                # Try to extract value from details string
+                if metric_name == 'Weekly Average':
+                    match = re.search(r'Average commits per week: ([\d.]+)', details)
+                    if match:
+                        value = match.group(1)
+                elif metric_name == 'Variance':
+                    match = re.search(r'Variance: ([\d.]+)', details)
+                    if match:
+                        value = match.group(1)
+                elif metric_name == 'Weekly Churn':
+                    match = re.search(r'Weekly churn: ([\d.]+)', details)
+                    if match:
+                        value = match.group(1)
+                elif metric_name == 'Deletion Ratio':
+                    match = re.search(r'Deletion ratio: ([\d.]+)', details)
+                    if match:
+                        value = match.group(1)
+            
+            metrics_data['Value'].append(value)
+            
+            # Always show industry standard
             industry_value = comp.get(industry_key)
             if industry_value is None:
                 industry_value = industry_standards.get(metric_name, 'N/A')
             metrics_data['Industry Standard'].append(industry_value)
             
-            metrics_data['Rating'].append(comp.get('rating', 'Below Average').title())
+            # Determine rating based on score
+            if score >= 90:
+                rating = 'Excellent'
+            elif score >= 75:
+                rating = 'Good'
+            elif score >= 60:
+                rating = 'Average'
+            else:
+                rating = 'Below Average'
+            
+            metrics_data['Rating'].append(rating)
 
-    def _get_industry_standards(self, section: str) -> Dict[str, str]:
-        """Get industry standards for a given section."""
+    def _generate_recommendations(self, section: str, comp: Dict, score: float) -> List[str]:
+        """Generate recommendations based on metric values."""
+        recommendations = []
+        
         if section == 'Commit Frequency':
-            return {
-                'Weekly Average': '3-15 commits',
-                'Variance': '< 5 (excellent), < 10 (good)'
-            }
+            weekly_avg = float(comp.get('your_weekly_avg', '0').replace('N/A', '0'))
+            variance = float(comp.get('your_variance', '0').replace('N/A', '0'))
+            industry_avg = float(comp.get('industry_avg', '3').replace('N/A', '3'))
+            
+            if weekly_avg < industry_avg:
+                recommendations.append("Increase commit frequency to improve code integration and collaboration")
+                recommendations.append("Consider implementing smaller, more frequent commits instead of large batches")
+            if variance > 10:
+                recommendations.append("Establish consistent commit patterns across the team")
+                recommendations.append("Set up automated CI/CD pipelines to encourage regular commits")
+            
         elif section == 'Code Churn':
-            return {
-                'Weekly Churn': '< 200 (excellent), < 500 (good)',
-                'Deletion Ratio': '< 0.8 (excellent), < 1.0 (good)'
-            }
+            weekly_churn = float(comp.get('your_weekly_churn', '0').replace('N/A', '0'))
+            deletion_ratio = float(comp.get('your_deletion_ratio', '0').replace('N/A', '0'))
+            
+            if weekly_churn > 500:
+                recommendations.append("Reduce code churn by improving planning and design phases")
+                recommendations.append("Consider code reviews to catch issues earlier in development")
+            if deletion_ratio > 1.0:
+                recommendations.append("High code deletion ratio indicates potential instability - review development practices")
+                recommendations.append("Implement better test coverage to prevent code rework")
+            
         elif section == 'Branch Complexity':
-            return {
-                'Branch Count': '< 5 (excellent), < 8 (good)',
-                'Max Branch Age': '< 7 days (excellent), < 14 days (good)'
-            }
-        return {}
+            branch_count = int(comp.get('your_branch_count', '0').replace('N/A', '0'))
+            max_age = comp.get('your_max_age', '0 days')
+            max_age_days = int(max_age.split()[0]) if 'days' in max_age else 0
+            
+            if branch_count > 8:
+                recommendations.append("Reduce number of active branches by implementing trunk-based development")
+                recommendations.append("Set up branch cleanup policies to remove stale branches")
+            if max_age_days > 14:
+                recommendations.append("Long-lived branches detected - implement feature flags for better integration")
+                recommendations.append("Consider shorter-lived feature branches and more frequent merging")
+        
+        # Add best practices based on score
+        if score < 60:
+            if section == 'Commit Frequency':
+                recommendations.append("Implement git hooks to enforce commit message standards")
+                recommendations.append("Use commit templates to improve commit message quality")
+            elif section == 'Code Churn':
+                recommendations.append("Set up automated code quality checks in CI pipeline")
+                recommendations.append("Use static code analysis tools to prevent problematic changes")
+            elif section == 'Branch Complexity':
+                recommendations.append("Document branching strategy in repository")
+                recommendations.append("Automate branch cleanup for merged or abandoned features")
+        
+        return recommendations
 
     def _get_combined_recommendations(self, assessment_details: Dict) -> str:
         """Combine all recommendations into a single formatted string."""
         recommendations = []
+        
+        # Add overall recommendations based on patterns
+        overall_issues = set()
+        for section, details in assessment_details.items():
+            comp = details.get('industry_comparison', {})
+            if section == 'commit_frequency':
+                if comp.get('your_variance', '0') != 'N/A' and float(comp['your_variance']) > 10:
+                    overall_issues.add('high_commit_variance')
+            elif section == 'code_churn':
+                if comp.get('your_deletion_ratio', '0') != 'N/A' and float(comp['your_deletion_ratio']) > 1.0:
+                    overall_issues.add('high_deletion_ratio')
+            elif section == 'branch_patterns':
+                if comp.get('your_max_age', '0 days').split()[0].isdigit() and int(comp['your_max_age'].split()[0]) > 14:
+                    overall_issues.add('long_lived_branches')
+        
+        # Add overall recommendations
+        if overall_issues:
+            recommendations.append("Overall Recommendations:")
+            if 'high_commit_variance' in overall_issues:
+                recommendations.append("- Establish team-wide commit guidelines and automated checks")
+            if 'high_deletion_ratio' in overall_issues:
+                recommendations.append("- Review development process to reduce code rework")
+            if 'long_lived_branches' in overall_issues:
+                recommendations.append("- Implement trunk-based development practices")
+            recommendations.append("")
+        
+        # Add section-specific recommendations
         for section, details in assessment_details.items():
             section_recs = details.get('recommendations', [])
             if section_recs:
                 section_name = section.replace('_', ' ').title()
                 recommendations.append(f"{section_name}:")
                 recommendations.extend([f"- {rec}" for rec in section_recs])
+                recommendations.append("")  # Add spacing between sections
+        
         return '\n'.join(recommendations)
 
     def _format_excel_sheets(self, writer: pd.ExcelWriter):
@@ -1073,6 +1177,25 @@ class CodeQualityAnalyzer:
             return 'Average (Top 50%)'
         else:
             return 'Below Average'
+
+    def _get_industry_standards(self, section: str) -> Dict[str, str]:
+        """Get industry standards for a given section."""
+        if section == 'Commit Frequency':
+            return {
+                'Weekly Average': '3-15 commits',
+                'Variance': '< 5 (excellent), < 10 (good)'
+            }
+        elif section == 'Code Churn':
+            return {
+                'Weekly Churn': '< 200 (excellent), < 500 (good)',
+                'Deletion Ratio': '< 0.8 (excellent), < 1.0 (good)'
+            }
+        elif section == 'Branch Complexity':
+            return {
+                'Branch Count': '< 5 (excellent), < 8 (good)',
+                'Max Branch Age': '< 7 days (excellent), < 14 days (good)'
+            }
+        return {}
 
 def main():
     """Main function to run the analysis."""
