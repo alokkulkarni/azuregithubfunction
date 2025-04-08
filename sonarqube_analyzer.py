@@ -165,6 +165,8 @@ class SonarQubeAnalyzer:
 
     def enrich_analysis_file(self, analysis_file: str):
         """Enrich existing analysis file with SonarQube data."""
+        temp_file = None  # Initialize temp_file at the start
+        
         try:
             if not os.path.exists(analysis_file):
                 raise FileNotFoundError(f"Original file not found: {analysis_file}")
@@ -233,65 +235,66 @@ class SonarQubeAnalyzer:
                     else:
                         df.at[idx, 'SonarQube Status'] = 'Not Found'
             
-            # Create a temporary file
+            # Create a temporary file for writing
             temp_fd, temp_file = tempfile.mkstemp(suffix='.xlsx')
             os.close(temp_fd)
             
-            try:
-                # Write to Excel with formatting
-                with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Repository Analysis')
-                    
-                    # Get the workbook and worksheet
-                    workbook = writer.book
-                    worksheet = writer.sheets['Repository Analysis']
-                    
-                    # Format headers
-                    header_format = {
-                        'font': Font(bold=True),
-                        'fill': PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid'),
-                        'alignment': Alignment(horizontal='center', vertical='center', wrap_text=True)
-                    }
-                    
-                    # Apply header formatting
+            # Write to Excel with formatting
+            with pd.ExcelWriter(temp_file, engine='openpyxl', mode='w') as writer:
+                df.to_excel(writer, index=False, sheet_name='Repository Analysis')
+                
+                # Get the workbook and worksheet
+                workbook = writer.book
+                worksheet = writer.sheets['Repository Analysis']
+                
+                # Format headers
+                header_format = {
+                    'font': Font(bold=True),
+                    'fill': PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid'),
+                    'alignment': Alignment(horizontal='center', vertical='center', wrap_text=True)
+                }
+                
+                # Apply header formatting
+                for col in range(1, worksheet.max_column + 1):
+                    cell = worksheet.cell(row=1, column=col)
+                    cell.font = header_format['font']
+                    cell.fill = header_format['fill']
+                    cell.alignment = header_format['alignment']
+                
+                # Format data cells
+                data_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                for row in range(2, worksheet.max_row + 1):
                     for col in range(1, worksheet.max_column + 1):
-                        cell = worksheet.cell(row=1, column=col)
-                        cell.font = header_format['font']
-                        cell.fill = header_format['fill']
-                        cell.alignment = header_format['alignment']
-                    
-                    # Format data cells
-                    data_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                    for row in range(2, worksheet.max_row + 1):
-                        for col in range(1, worksheet.max_column + 1):
-                            cell = worksheet.cell(row=row, column=col)
-                            cell.alignment = data_alignment
-                    
-                    # Set column widths
-                    for col in range(worksheet.max_column):
-                        worksheet.column_dimensions[get_column_letter(col + 1)].width = 15
+                        cell = worksheet.cell(row=row, column=col)
+                        cell.alignment = data_alignment
                 
-                # Move temporary file to replace original
-                shutil.move(temp_file, analysis_file)
-                logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
-                temp_file = None  # Prevent deletion in finally block
-                
-            except Exception as save_error:
-                logging.error(f"Error saving enriched file: {str(save_error)}")
-                raise save_error
+                # Set column widths
+                for col in range(worksheet.max_column):
+                    worksheet.column_dimensions[get_column_letter(col + 1)].width = 15
+            
+            # Move temporary file to replace original
+            shutil.move(temp_file, analysis_file)
+            logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
+            temp_file = None  # Prevent deletion in finally block since file was moved
             
         except Exception as e:
             logging.error(f"Error enriching analysis file with SonarQube data: {str(e)}")
-            raise
-            
-        finally:
-            # Remove temporary file if it exists
             if temp_file and os.path.exists(temp_file):
                 try:
                     os.remove(temp_file)
-                    logging.info("Cleaned up temporary file")
+                    logging.info("Cleaned up temporary file after error")
                 except Exception as cleanup_error:
                     logging.warning(f"Could not remove temporary file: {str(cleanup_error)}")
+            raise
+            
+        finally:
+            # Final cleanup of temporary file if it still exists
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logging.info("Cleaned up temporary file in finally block")
+                except Exception as cleanup_error:
+                    logging.warning(f"Could not remove temporary file in finally: {str(cleanup_error)}")
 
 def main():
     """Main function to run the SonarQube analysis."""
