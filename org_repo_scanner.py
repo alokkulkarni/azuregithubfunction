@@ -73,6 +73,7 @@ class OrgRepoScanner:
 
         logging.info(f"Processing repository: {repo_name}")
         
+        # Initialize insights with default values
         insights = {
             'Repository': repo_name,
             'Description': repo.get('description', ''),
@@ -82,7 +83,7 @@ class OrgRepoScanner:
             'Is Archived': repo.get('archived', False),
             'Is Private': repo.get('private', False),
             'Default Branch': repo.get('default_branch', ''),
-            'License': repo.get('license', {}).get('name', 'No License'),
+            'License': '',
             'Stars': repo.get('stargazers_count', 0),
             'Forks': repo.get('forks_count', 0),
             'Watchers': repo.get('watchers_count', 0),
@@ -101,21 +102,32 @@ class OrgRepoScanner:
         }
 
         try:
+            # Safely get license information
+            license_info = repo.get('license') or {}
+            if isinstance(license_info, dict):
+                insights['License'] = license_info.get('name', 'No License')
+            else:
+                insights['License'] = 'No License'
+
             # Get additional insights using GitHubInsights
-            repo_insights = self.insights_client.get_insights(repo_name)
-            
-            if repo_insights:
+            try:
+                repo_insights = self.insights_client.get_insights(repo_name)
+            except Exception as e:
+                logging.error(f"Error getting insights from GitHubInsights for {repo_name}: {str(e)}")
+                repo_insights = None
+
+            if repo_insights and isinstance(repo_insights, dict):
                 # Update last commit information
-                if repo_insights.get('last_commit'):
-                    commit = repo_insights['last_commit']
-                    insights['Last Commit SHA'] = commit.get('sha', '')[:7] if commit.get('sha') else ''
-                    insights['Last Commit Message'] = commit.get('message', '')
-                    insights['Last Commit Author'] = commit.get('author', '')
-                    insights['Last Commit Date'] = commit.get('date', '')
+                last_commit = repo_insights.get('last_commit') or {}
+                if isinstance(last_commit, dict):
+                    insights['Last Commit SHA'] = last_commit.get('sha', '')[:7] if last_commit.get('sha') else ''
+                    insights['Last Commit Message'] = last_commit.get('message', '')
+                    insights['Last Commit Author'] = last_commit.get('author', '')
+                    insights['Last Commit Date'] = last_commit.get('date', '')
 
                 # Update contributors information
-                if repo_insights.get('contributors'):
-                    contributors = repo_insights['contributors']
+                contributors = repo_insights.get('contributors') or []
+                if isinstance(contributors, list):
                     insights['Total Contributors'] = len(contributors)
                     top_contributors = []
                     for c in contributors[:5]:
@@ -126,25 +138,31 @@ class OrgRepoScanner:
                     insights['Top Contributors'] = ', '.join(top_contributors)
 
             # Get PR counts
-            pr_url = f'{self.base_url}/repos/{self.org}/{repo_name}/pulls'
-            pr_params = {'state': 'all', 'per_page': 1}
-            pr_response = requests.get(pr_url, headers=self.headers, params=pr_params)
-            if pr_response.status_code == 200:
-                link_header = pr_response.headers.get('Link', '')
-                if 'rel="last"' in link_header:
-                    try:
-                        last_page = int(link_header.split('page=')[-1].split('>')[0])
-                        insights['Closed PRs'] = last_page
-                    except (ValueError, IndexError) as e:
-                        logging.error(f"Error parsing PR count for {repo_name}: {str(e)}")
-                else:
-                    insights['Closed PRs'] = len(pr_response.json())
+            try:
+                pr_url = f'{self.base_url}/repos/{self.org}/{repo_name}/pulls'
+                pr_params = {'state': 'all', 'per_page': 1}
+                pr_response = requests.get(pr_url, headers=self.headers, params=pr_params)
+                
+                if pr_response.status_code == 200:
+                    link_header = pr_response.headers.get('Link', '')
+                    if 'rel="last"' in link_header:
+                        try:
+                            last_page = int(link_header.split('page=')[-1].split('>')[0])
+                            insights['Closed PRs'] = last_page
+                        except (ValueError, IndexError) as e:
+                            logging.error(f"Error parsing PR count for {repo_name}: {str(e)}")
+                    else:
+                        pr_data = pr_response.json()
+                        insights['Closed PRs'] = len(pr_data) if isinstance(pr_data, list) else 0
 
-            # Get open PRs
-            pr_params['state'] = 'open'
-            open_prs = requests.get(pr_url, headers=self.headers, params=pr_params)
-            if open_prs.status_code == 200:
-                insights['Open PRs'] = len(open_prs.json())
+                # Get open PRs
+                pr_params['state'] = 'open'
+                open_prs = requests.get(pr_url, headers=self.headers, params=pr_params)
+                if open_prs.status_code == 200:
+                    pr_data = open_prs.json()
+                    insights['Open PRs'] = len(pr_data) if isinstance(pr_data, list) else 0
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Error fetching PR data for {repo_name}: {str(e)}")
 
         except Exception as e:
             logging.error(f"Error getting insights for {repo_name}: {str(e)}")
