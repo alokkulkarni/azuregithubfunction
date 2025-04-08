@@ -224,7 +224,7 @@ class SonarQubeAnalyzer:
             for row in range(2, main_sheet.max_row + 1):
                 repo = main_sheet.cell(row=row, column=repo_col).value
                 if repo:
-                    project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
+                    project_key = f"{repo}".lower()
                     logging.info(f"Processing repository: {repo} (Project key: {project_key})")
                     
                     if project_info := self.get_project_info(project_key):
