@@ -62,7 +62,15 @@ class OrgRepoScanner:
 
     def get_repo_insights(self, repo: dict) -> dict:
         """Get comprehensive insights for a repository."""
-        repo_name = repo['name']
+        if not repo or not isinstance(repo, dict):
+            logging.error("Invalid repository data received")
+            return None
+
+        repo_name = repo.get('name')
+        if not repo_name:
+            logging.error("Repository name not found in data")
+            return None
+
         logging.info(f"Processing repository: {repo_name}")
         
         insights = {
@@ -74,13 +82,13 @@ class OrgRepoScanner:
             'Is Archived': repo.get('archived', False),
             'Is Private': repo.get('private', False),
             'Default Branch': repo.get('default_branch', ''),
-            'License': repo.get('license', {}).get('name', ''),
+            'License': repo.get('license', {}).get('name', 'No License'),
             'Stars': repo.get('stargazers_count', 0),
             'Forks': repo.get('forks_count', 0),
             'Watchers': repo.get('watchers_count', 0),
             'Open Issues': repo.get('open_issues_count', 0),
             'Size (KB)': repo.get('size', 0),
-            'Language': repo.get('language', ''),
+            'Language': repo.get('language', 'Not Specified'),
             'Last Commit SHA': '',
             'Last Commit Message': '',
             'Last Commit Author': '',
@@ -96,23 +104,26 @@ class OrgRepoScanner:
             # Get additional insights using GitHubInsights
             repo_insights = self.insights_client.get_insights(repo_name)
             
-            # Update last commit information
-            if repo_insights['last_commit']:
-                commit = repo_insights['last_commit']
-                insights['Last Commit SHA'] = commit['sha'][:7]
-                insights['Last Commit Message'] = commit['message']
-                insights['Last Commit Author'] = commit['author']
-                insights['Last Commit Date'] = commit['date']
+            if repo_insights:
+                # Update last commit information
+                if repo_insights.get('last_commit'):
+                    commit = repo_insights['last_commit']
+                    insights['Last Commit SHA'] = commit.get('sha', '')[:7] if commit.get('sha') else ''
+                    insights['Last Commit Message'] = commit.get('message', '')
+                    insights['Last Commit Author'] = commit.get('author', '')
+                    insights['Last Commit Date'] = commit.get('date', '')
 
-            # Update contributors information
-            if repo_insights['contributors']:
-                contributors = repo_insights['contributors']
-                insights['Total Contributors'] = len(contributors)
-                top_contributors = [
-                    f"{c['login']} ({c['contributions']})"
-                    for c in contributors[:5]
-                ]
-                insights['Top Contributors'] = ', '.join(top_contributors)
+                # Update contributors information
+                if repo_insights.get('contributors'):
+                    contributors = repo_insights['contributors']
+                    insights['Total Contributors'] = len(contributors)
+                    top_contributors = []
+                    for c in contributors[:5]:
+                        if isinstance(c, dict):
+                            login = c.get('login', 'Unknown')
+                            contributions = c.get('contributions', 0)
+                            top_contributors.append(f"{login} ({contributions})")
+                    insights['Top Contributors'] = ', '.join(top_contributors)
 
             # Get PR counts
             pr_url = f'{self.base_url}/repos/{self.org}/{repo_name}/pulls'
@@ -121,8 +132,11 @@ class OrgRepoScanner:
             if pr_response.status_code == 200:
                 link_header = pr_response.headers.get('Link', '')
                 if 'rel="last"' in link_header:
-                    last_page = int(link_header.split('page=')[-1].split('>')[0])
-                    insights['Closed PRs'] = last_page
+                    try:
+                        last_page = int(link_header.split('page=')[-1].split('>')[0])
+                        insights['Closed PRs'] = last_page
+                    except (ValueError, IndexError) as e:
+                        logging.error(f"Error parsing PR count for {repo_name}: {str(e)}")
                 else:
                     insights['Closed PRs'] = len(pr_response.json())
 
@@ -150,7 +164,12 @@ class OrgRepoScanner:
             all_insights = []
             for repo in repos:
                 insights = self.get_repo_insights(repo)
-                all_insights.append(insights)
+                if insights:  # Only add valid insights
+                    all_insights.append(insights)
+
+            if not all_insights:
+                logging.error("No valid repository insights found")
+                return
 
             # Create DataFrame and export to Excel
             df = pd.DataFrame(all_insights)
@@ -159,7 +178,7 @@ class OrgRepoScanner:
             date_columns = ['Created At', 'Updated At', 'Last Push', 'Last Commit Date']
             for col in date_columns:
                 if col in df.columns:
-                    df[col] = pd.to_datetime(df[col]).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
 
             # Save to Excel
             logging.info(f"Saving insights to: {output_file}")
