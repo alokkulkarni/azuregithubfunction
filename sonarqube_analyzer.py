@@ -167,7 +167,7 @@ class SonarQubeAnalyzer:
         """Enrich existing analysis file with SonarQube data."""
         if not os.path.exists(analysis_file):
             raise FileNotFoundError(f"Original file not found: {analysis_file}")
-        
+
         try:
             # Read the Excel file using pandas with openpyxl engine
             df = pd.read_excel(analysis_file, engine='openpyxl')
@@ -232,63 +232,63 @@ class SonarQubeAnalyzer:
                         df.at[idx, 'Last Analysis'] = metrics['last_analysis']
                     else:
                         df.at[idx, 'SonarQube Status'] = 'Not Found'
+
+            # Create output filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            file_name, file_ext = os.path.splitext(analysis_file)
+            output_file = f"{file_name}_sonar_{timestamp}{file_ext}"
+
+            # Save to new file first
+            df.to_excel(output_file, index=False, engine='openpyxl')
             
-            # Save with formatting
-            self._save_excel_with_formatting(df, analysis_file)
-            logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
+            # Now apply formatting
+            wb = openpyxl.load_workbook(output_file)
+            ws = wb.active
+            
+            # Format headers
+            header_format = {
+                'font': Font(bold=True),
+                'fill': PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid'),
+                'alignment': Alignment(horizontal='center', vertical='center', wrap_text=True)
+            }
+            
+            # Apply header formatting
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=1, column=col)
+                cell.font = header_format['font']
+                cell.fill = header_format['fill']
+                cell.alignment = header_format['alignment']
+            
+            # Format data cells
+            data_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            for row in range(2, ws.max_row + 1):
+                for col in range(1, ws.max_column + 1):
+                    cell = ws.cell(row=row, column=col)
+                    cell.alignment = data_alignment
+            
+            # Set column widths
+            for col in range(ws.max_column):
+                ws.column_dimensions[get_column_letter(col + 1)].width = 15
+            
+            # Save the formatted workbook
+            wb.save(output_file)
+            wb.close()
+            
+            # If everything was successful, replace the original file
+            if os.path.exists(output_file):
+                if os.path.exists(analysis_file):
+                    os.remove(analysis_file)
+                os.rename(output_file, analysis_file)
+                logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
             
         except Exception as e:
             logging.error(f"Error processing Excel file: {str(e)}")
-            raise
-
-    def _save_excel_with_formatting(self, df: pd.DataFrame, output_file: str):
-        """Save DataFrame to Excel with formatting."""
-        # Create a temporary file
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
-        os.close(temp_fd)
-        
-        try:
-            # Write to Excel with formatting
-            with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Repository Analysis')
-                
-                # Get the workbook and worksheet
-                workbook = writer.book
-                worksheet = writer.sheets['Repository Analysis']
-                
-                # Format headers
-                header_format = {
-                    'font': Font(bold=True),
-                    'fill': PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid'),
-                    'alignment': Alignment(horizontal='center', vertical='center', wrap_text=True)
-                }
-                
-                # Apply header formatting
-                for col in range(1, worksheet.max_column + 1):
-                    cell = worksheet.cell(row=1, column=col)
-                    cell.font = header_format['font']
-                    cell.fill = header_format['fill']
-                    cell.alignment = header_format['alignment']
-                
-                # Format data cells
-                data_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                for row in range(2, worksheet.max_row + 1):
-                    for col in range(1, worksheet.max_column + 1):
-                        cell = worksheet.cell(row=row, column=col)
-                        cell.alignment = data_alignment
-                
-                # Set column widths
-                for col in range(worksheet.max_column):
-                    worksheet.column_dimensions[get_column_letter(col + 1)].width = 15
-            
-            # Move temporary file to replace original
-            shutil.move(temp_path, output_file)
-            
-        except Exception as e:
-            # Clean up temp file if something goes wrong
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            logging.error(f"Error saving Excel file: {str(e)}")
+            # Clean up output file if it exists
+            if 'output_file' in locals() and os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except Exception as cleanup_error:
+                    logging.warning(f"Could not remove temporary file: {str(cleanup_error)}")
             raise
 
 def main():
