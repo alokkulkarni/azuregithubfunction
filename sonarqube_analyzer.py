@@ -8,8 +8,6 @@ from dotenv import load_dotenv
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-import shutil
-import tempfile
 
 # Configure logging
 logging.basicConfig(
@@ -163,21 +161,21 @@ class SonarQubeAnalyzer:
         except (ValueError, TypeError):
             return "0min"
 
-    def enrich_analysis_file(self, analysis_file: str):
-        """Enrich existing analysis file with SonarQube data."""
-        if not os.path.exists(analysis_file):
-            raise FileNotFoundError(f"Original file not found: {analysis_file}")
-
+    def update_excel_with_sonarqube_data(self, excel_file: str):
+        """Update Excel file with SonarQube analysis data."""
         try:
-            # Read the Excel file using pandas with openpyxl engine
-            df = pd.read_excel(analysis_file, engine='openpyxl')
-            logging.info(f"Successfully read Excel file: {analysis_file}")
+            # Load the Excel file
+            wb = openpyxl.load_workbook(excel_file)
+            sheet = wb.active
             
-            # Verify Repository column exists
-            if 'Repository' not in df.columns:
-                raise ValueError("Could not find 'Repository' column in the sheet")
+            # Find the Repository column
+            header_row = list(sheet.iter_rows(min_row=1, max_row=1, values_only=True))[0]
+            try:
+                repo_col_idx = header_row.index('Repository') + 1
+            except ValueError:
+                raise ValueError("Could not find 'Repository' column in the Excel file")
             
-            # Add SonarQube columns
+            # Define SonarQube columns to add
             sonar_columns = [
                 'SonarQube Status',
                 'Quality Gate',
@@ -198,97 +196,69 @@ class SonarQubeAnalyzer:
                 'Last Analysis'
             ]
             
-            # Initialize new columns with 'N/A'
-            for col in sonar_columns:
-                df[col] = 'N/A'
+            # Add SonarQube column headers
+            start_col = sheet.max_column + 1
+            for col_num, header in enumerate(sonar_columns, start=start_col):
+                cell = sheet.cell(row=1, column=col_num)
+                cell.value = header
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                sheet.column_dimensions[get_column_letter(col_num)].width = 15
             
             # Process each repository
-            for idx, row in df.iterrows():
-                repo = row['Repository']
-                if pd.notna(repo):  # Check if repository name is not NaN
+            for row in range(2, sheet.max_row + 1):
+                repo = sheet.cell(row=row, column=repo_col_idx).value
+                if repo:
                     project_key = f"{os.getenv('GITHUB_ORG')}_{repo}".lower()
                     logging.info(f"Processing repository: {repo} (Project key: {project_key})")
                     
                     if project_info := self.get_project_info(project_key):
                         metrics = self.get_project_metrics(project_key)
                         
-                        # Update metrics in DataFrame
-                        df.at[idx, 'SonarQube Status'] = 'Active'
-                        df.at[idx, 'Quality Gate'] = metrics['quality_gate_status']
-                        df.at[idx, 'Bugs'] = metrics['bugs']
-                        df.at[idx, 'Vulnerabilities'] = metrics['vulnerabilities']
-                        df.at[idx, 'Code Smells'] = metrics['code_smells']
-                        df.at[idx, 'Coverage (%)'] = f"{metrics['coverage']:.1f}"
-                        df.at[idx, 'Duplication (%)'] = f"{metrics['duplicated_lines_density']:.1f}"
-                        df.at[idx, 'Security Rating'] = metrics['security_rating']
-                        df.at[idx, 'Reliability Rating'] = metrics['reliability_rating']
-                        df.at[idx, 'Maintainability Rating'] = metrics['sqale_rating']
-                        df.at[idx, 'Lines of Code'] = metrics['lines_of_code']
-                        df.at[idx, 'Cognitive Complexity'] = metrics['cognitive_complexity']
-                        df.at[idx, 'Technical Debt'] = metrics['technical_debt']
-                        df.at[idx, 'Test Success (%)'] = f"{metrics['test_success_density']:.1f}"
-                        df.at[idx, 'Test Failures'] = metrics['test_failures']
-                        df.at[idx, 'Test Errors'] = metrics['test_errors']
-                        df.at[idx, 'Last Analysis'] = metrics['last_analysis']
+                        # Write metrics to Excel
+                        col = start_col
+                        sheet.cell(row=row, column=col, value='Active')
+                        sheet.cell(row=row, column=col + 1, value=metrics['quality_gate_status'])
+                        sheet.cell(row=row, column=col + 2, value=metrics['bugs'])
+                        sheet.cell(row=row, column=col + 3, value=metrics['vulnerabilities'])
+                        sheet.cell(row=row, column=col + 4, value=metrics['code_smells'])
+                        sheet.cell(row=row, column=col + 5, value=f"{metrics['coverage']:.1f}")
+                        sheet.cell(row=row, column=col + 6, value=f"{metrics['duplicated_lines_density']:.1f}")
+                        sheet.cell(row=row, column=col + 7, value=metrics['security_rating'])
+                        sheet.cell(row=row, column=col + 8, value=metrics['reliability_rating'])
+                        sheet.cell(row=row, column=col + 9, value=metrics['sqale_rating'])
+                        sheet.cell(row=row, column=col + 10, value=metrics['lines_of_code'])
+                        sheet.cell(row=row, column=col + 11, value=metrics['cognitive_complexity'])
+                        sheet.cell(row=row, column=col + 12, value=metrics['technical_debt'])
+                        sheet.cell(row=row, column=col + 13, value=f"{metrics['test_success_density']:.1f}")
+                        sheet.cell(row=row, column=col + 14, value=metrics['test_failures'])
+                        sheet.cell(row=row, column=col + 15, value=metrics['test_errors'])
+                        sheet.cell(row=row, column=col + 16, value=metrics['last_analysis'])
                     else:
-                        df.at[idx, 'SonarQube Status'] = 'Not Found'
-
-            # Create output filename with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            file_name, file_ext = os.path.splitext(analysis_file)
-            output_file = f"{file_name}_sonar_{timestamp}{file_ext}"
-
-            # Save to new file first
-            df.to_excel(output_file, index=False, engine='openpyxl')
+                        # Fill with 'Not Found' for projects not in SonarQube
+                        for i in range(len(sonar_columns)):
+                            cell = sheet.cell(row=row, column=start_col + i)
+                            cell.value = 'Not Found' if i == 0 else 'N/A'
+                    
+                    # Apply alignment to all cells in the row
+                    for col in range(start_col, start_col + len(sonar_columns)):
+                        cell = sheet.cell(row=row, column=col)
+                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
-            # Now apply formatting
-            wb = openpyxl.load_workbook(output_file)
-            ws = wb.active
-            
-            # Format headers
-            header_format = {
-                'font': Font(bold=True),
-                'fill': PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid'),
-                'alignment': Alignment(horizontal='center', vertical='center', wrap_text=True)
-            }
-            
-            # Apply header formatting
-            for col in range(1, ws.max_column + 1):
-                cell = ws.cell(row=1, column=col)
-                cell.font = header_format['font']
-                cell.fill = header_format['fill']
-                cell.alignment = header_format['alignment']
-            
-            # Format data cells
-            data_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            for row in range(2, ws.max_row + 1):
-                for col in range(1, ws.max_column + 1):
-                    cell = ws.cell(row=row, column=col)
-                    cell.alignment = data_alignment
-            
-            # Set column widths
-            for col in range(ws.max_column):
-                ws.column_dimensions[get_column_letter(col + 1)].width = 15
-            
-            # Save the formatted workbook
-            wb.save(output_file)
+            # Save the workbook with a backup strategy
+            backup_file = f"{os.path.splitext(excel_file)[0]}_backup.xlsx"
+            wb.save(backup_file)
             wb.close()
             
-            # If everything was successful, replace the original file
-            if os.path.exists(output_file):
-                if os.path.exists(analysis_file):
-                    os.remove(analysis_file)
-                os.rename(output_file, analysis_file)
-                logging.info(f"Successfully enriched {analysis_file} with SonarQube data")
+            # If save was successful, replace the original file
+            os.replace(backup_file, excel_file)
+            logging.info(f"Successfully updated {excel_file} with SonarQube data")
             
         except Exception as e:
-            logging.error(f"Error processing Excel file: {str(e)}")
-            # Clean up output file if it exists
-            if 'output_file' in locals() and os.path.exists(output_file):
-                try:
-                    os.remove(output_file)
-                except Exception as cleanup_error:
-                    logging.warning(f"Could not remove temporary file: {str(cleanup_error)}")
+            logging.error(f"Error updating Excel file: {str(e)}")
+            if 'backup_file' in locals() and os.path.exists(backup_file):
+                os.remove(backup_file)
             raise
 
 def main():
@@ -321,8 +291,8 @@ def main():
     # Initialize SonarQube analyzer
     analyzer = SonarQubeAnalyzer(sonar_url, sonar_token)
     
-    # Enrich the analysis file with SonarQube data
-    analyzer.enrich_analysis_file(excel_filename)
+    # Update the Excel file with SonarQube data
+    analyzer.update_excel_with_sonarqube_data(excel_filename)
 
 if __name__ == "__main__":
     main() 
