@@ -25,12 +25,18 @@ class SonarQubeAnalyzer:
             'Authorization': f'Bearer {sonar_token}'
         }
 
+    def to_camel_case(self, project_key: str) -> str:
+        """Convert project key to camel case by splitting on underscores and capitalizing each word."""
+        words = project_key.split('-')
+        return ''.join(word.capitalize() for word in words)
+
     def get_project_info(self, project_key: str) -> Optional[Dict]:
         """Get project information from SonarQube using measures endpoint."""
+        camel_case_key = self.to_camel_case(project_key)
         try:
             url = f"{self.base_url}/api/measures/component"
             params = {
-                'component': project_key,
+                'component': camel_case_key,
                 'metricKeys': 'ncloc'  # Using a simple metric to validate project existence
             }
             response = requests.get(url, headers=self.headers, params=params)
@@ -44,12 +50,12 @@ class SonarQubeAnalyzer:
             
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
-                logging.info(f"Project {project_key} not found in SonarQube")
+                logging.info(f"Project {camel_case_key} not found in SonarQube")
             else:
-                logging.error(f"Error fetching project info for {project_key}: {str(e)}")
+                logging.error(f"Error fetching project info for {camel_case_key}: {str(e)}")
             return None
         except Exception as e:
-            logging.error(f"Error fetching project info for {project_key}: {str(e)}")
+            logging.error(f"Error fetching project info for {camel_case_key}: {str(e)}")
             return None
 
     def get_project_metrics(self, project_key: str) -> Dict[str, Any]:
@@ -72,12 +78,14 @@ class SonarQubeAnalyzer:
             'test_failures': 0,
             'test_errors': 0
         }
+
+        camel_case_key = self.to_camel_case(project_key)
         
         try:
             # Get measures
             url = f"{self.base_url}/api/measures/component"
             params = {
-                'component': project_key,
+                'component': camel_case_key,
                 'metricKeys': ('bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,'
                              'security_rating,reliability_rating,sqale_rating,ncloc,cognitive_complexity,'
                              'sqale_index,test_success_density,test_failures,test_errors')
@@ -108,7 +116,7 @@ class SonarQubeAnalyzer:
             
             # Get quality gate status
             url = f"{self.base_url}/api/qualitygates/project_status"
-            params = {'projectKey': project_key}
+            params = {'projectKey': camel_case_key}
             response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
             
@@ -118,7 +126,7 @@ class SonarQubeAnalyzer:
             # Get last analysis date
             url = f"{self.base_url}/api/project_analyses/search"
             params = {
-                'project': project_key,
+                'project': camel_case_key,
                 'ps': 1  # Get only the latest analysis
             }
             response = requests.get(url, headers=self.headers, params=params)
@@ -130,7 +138,7 @@ class SonarQubeAnalyzer:
                 metrics['last_analysis'] = analyses[0].get('date', 'N/A')
             
         except Exception as e:
-            logging.error(f"Error fetching metrics for {project_key}: {str(e)}")
+            logging.error(f"Error fetching metrics for {camel_case_key}: {str(e)}")
         
         return metrics
 
@@ -200,7 +208,8 @@ class SonarQubeAnalyzer:
                 repo = row['Repository']
                 if pd.notna(repo):  # Check if repository name is not NaN
                     project_key = f"{repo}".lower()
-                    logging.info(f"Processing repository: {repo} (Project key: {project_key})")
+                    camel_case_key = self.to_camel_case(project_key)
+                    logging.info(f"Processing repository: {repo} (Project key: {camel_case_key})")
                     
                     if project_info := self.get_project_info(project_key):
                         metrics = self.get_project_metrics(project_key)
