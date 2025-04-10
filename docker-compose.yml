@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   mongodb:
-    image: mongo:6.0
+    image: mongo:latest
     container_name: repository_mongodb
     ports:
       - "27017:27017"
@@ -14,7 +12,7 @@ services:
     networks:
       - repository_network
 
-  repository_scanner:
+  repository-scanner:
     build:
       context: .
       dockerfile: Dockerfile
@@ -23,17 +21,28 @@ services:
       - mongodb
     volumes:
       - ./output:/app/output
-    environment:
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - GITHUB_ORG=${GITHUB_ORG}
-      - SONAR_URL=${SONAR_URL}
-      - SONAR_TOKEN=${SONAR_TOKEN}
-      - NEXUS_URL=${NEXUS_URL}
-      - NEXUS_USERNAME=${NEXUS_USERNAME}
-      - NEXUS_PASSWORD=${NEXUS_PASSWORD}
-      - MONGO_URI=mongodb://admin:admin123@mongodb:27017/repository_analysis?authSource=admin
+    env_file:
+      - .env
     networks:
       - repository_network
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: repository_dashboard
+    depends_on:
+      - mongodb
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./output:/app/output
+    env_file:
+      - .env
+    networks:
+      - repository_network
+    restart: unless-stopped
 
 networks:
   repository_network:

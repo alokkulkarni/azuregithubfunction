@@ -7,21 +7,21 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
+    curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy the rest of the application
 COPY . .
 
 # Set environment variables
-ENV PYTHONUNBUFFERED=1
 ENV GITHUB_TOKEN=${GITHUB_TOKEN}
-ENV GITHUB_ORG=${GITHUB_ORG}
+ENV GITHUB_ACCOUNT=${GITHUB_ACCOUNT}
+ENV GITHUB_IS_ORGANIZATION=${GITHUB_IS_ORGANIZATION}
 ENV SONAR_URL=${SONAR_URL}
 ENV SONAR_TOKEN=${SONAR_TOKEN}
 ENV NEXUS_URL=${NEXUS_URL}
@@ -29,8 +29,9 @@ ENV NEXUS_USERNAME=${NEXUS_USERNAME}
 ENV NEXUS_PASSWORD=${NEXUS_PASSWORD}
 ENV MONGO_URI=${MONGO_URI}
 
-# Create directory for Excel files
-RUN mkdir -p /app/output
+# Create a non-root user
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
 
-# Set entrypoint
-ENTRYPOINT ["python", "org_repo_scanner.py"] 
+# Run the application
+CMD ["python", "org_repo_scanner.py"] 
