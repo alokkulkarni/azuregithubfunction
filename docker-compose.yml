@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: repository_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+    networks:
+      - repository_network
+
+  repository_scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: repository_scanner
+    depends_on:
+      - mongodb
+    volumes:
+      - ./output:/app/output
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_ORG=${GITHUB_ORG}
+      - SONAR_URL=${SONAR_URL}
+      - SONAR_TOKEN=${SONAR_TOKEN}
+      - NEXUS_URL=${NEXUS_URL}
+      - NEXUS_USERNAME=${NEXUS_USERNAME}
+      - NEXUS_PASSWORD=${NEXUS_PASSWORD}
+      - MONGO_URI=mongodb://admin:admin123@mongodb:27017/repository_analysis?authSource=admin
+    networks:
+      - repository_network
+
+networks:
+  repository_network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+    driver: local 
