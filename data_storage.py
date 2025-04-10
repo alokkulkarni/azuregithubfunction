@@ -24,6 +24,11 @@ class DataStorage:
             self.repositories = self.db.repositories
             self.analysis_history = self.db.analysis_history
             
+            # Create indexes for better query performance
+            self.repositories.create_index([('Repository', 1)], unique=True)
+            self.repositories.create_index([('last_updated', -1)])
+            self.analysis_history.create_index([('timestamp', -1)])
+            
             # Test the connection
             self.client.admin.command('ping')
             logging.info("Successfully connected to MongoDB")
@@ -53,6 +58,15 @@ class DataStorage:
                         record[key] = float(value) if isinstance(value, float) else int(value)
                     elif pd.isna(value):
                         record[key] = None
+                    elif key in ['PR Cycle Time (Closed)', 'PR Cycle Time (Open)', 'Total Avg PR Cycle Time']:
+                        # Convert PR cycle time strings to numeric values if possible
+                        try:
+                            if isinstance(value, str) and value != 'N/A':
+                                # Remove any non-numeric characters except decimal point
+                                numeric_value = float(''.join(c for c in value if c.isdigit() or c == '.'))
+                                record[key] = numeric_value
+                        except (ValueError, TypeError):
+                            record[key] = None
                 
                 # Update or insert the record
                 self.repositories.update_one(
@@ -66,7 +80,12 @@ class DataStorage:
                 'timestamp': current_time,
                 'source_file': excel_file,
                 'records_processed': len(records),
-                'status': 'success'
+                'status': 'success',
+                'metrics_included': {
+                    'pr_cycle_time': True,
+                    'sonarqube': True,
+                    'nexus_iq': True
+                }
             })
             
             logging.info(f"Successfully stored {len(records)} repository records in MongoDB")
@@ -98,6 +117,40 @@ class DataStorage:
         except Exception as e:
             logging.error(f"Error retrieving analysis history: {str(e)}")
             return []
+    
+    def get_pr_cycle_time_stats(self) -> Dict[str, Any]:
+        """Get statistics about PR cycle times across all repositories."""
+        try:
+            pipeline = [
+                {
+                    '$match': {
+                        'PR Cycle Time (Closed)': {'$ne': None},
+                        'PR Cycle Time (Open)': {'$ne': None},
+                        'Total Avg PR Cycle Time': {'$ne': None}
+                    }
+                },
+                {
+                    '$group': {
+                        '_id': None,
+                        'avg_closed_cycle_time': {'$avg': '$PR Cycle Time (Closed)'},
+                        'avg_open_cycle_time': {'$avg': '$PR Cycle Time (Open)'},
+                        'avg_total_cycle_time': {'$avg': '$Total Avg PR Cycle Time'},
+                        'max_closed_cycle_time': {'$max': '$PR Cycle Time (Closed)'},
+                        'max_open_cycle_time': {'$max': '$PR Cycle Time (Open)'},
+                        'max_total_cycle_time': {'$max': '$Total Avg PR Cycle Time'},
+                        'min_closed_cycle_time': {'$min': '$PR Cycle Time (Closed)'},
+                        'min_open_cycle_time': {'$min': '$PR Cycle Time (Open)'},
+                        'min_total_cycle_time': {'$min': '$Total Avg PR Cycle Time'}
+                    }
+                }
+            ]
+            
+            result = list(self.repositories.aggregate(pipeline))
+            return result[0] if result else {}
+            
+        except Exception as e:
+            logging.error(f"Error getting PR cycle time stats: {str(e)}")
+            return {}
     
     def close(self) -> None:
         """Close MongoDB connection."""
@@ -141,6 +194,10 @@ def main():
         # Get and log analysis history
         history = storage.get_analysis_history()
         logging.info(f"Analysis history: {history}")
+        
+        # Get and log PR cycle time statistics
+        pr_stats = storage.get_pr_cycle_time_stats()
+        logging.info(f"PR Cycle Time Statistics: {pr_stats}")
         
     except Exception as e:
         logging.error(f"Error in main execution: {str(e)}")

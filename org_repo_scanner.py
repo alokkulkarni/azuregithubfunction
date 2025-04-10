@@ -3,7 +3,7 @@ import logging
 import requests
 import pandas as pd
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from github_insights import GitHubInsights
 from sonarqube_analyzer import SonarQubeAnalyzer
@@ -35,6 +35,70 @@ class OrgRepoScanner:
         self.nexus_analyzer = NexusIQAnalyzer(nexus_url, nexus_username, nexus_password)
         self.checkpoint_file = f"{org}_scan_checkpoint.json"
         self.results_file = f"{org}_scan_results.json"
+
+    def calculate_cycle_time(self, created_at: str, closed_at: str = None) -> float:
+        """Calculate cycle time in days between created_at and closed_at dates."""
+        try:
+            created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            closed = datetime.fromisoformat(closed_at.replace('Z', '+00:00')) if closed_at else datetime.utcnow()
+            return (closed - created).total_seconds() / (24 * 3600)  # Convert to days
+        except Exception as e:
+            logging.error(f"Error calculating cycle time: {str(e)}")
+            return 0.0
+
+    def get_pr_cycle_times(self, repo_name: str) -> Dict[str, float]:
+        """Get PR cycle time metrics for a repository."""
+        try:
+            url = f'{self.base_url}/repos/{self.org}/{repo_name}/pulls'
+            params = {
+                'state': 'all',  # Get both open and closed PRs
+                'per_page': 100,
+                'sort': 'updated',
+                'direction': 'desc'
+            }
+            
+            closed_times = []
+            open_times = []
+            all_times = []
+            
+            while True:
+                response = requests.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
+                prs = response.json()
+                
+                if not prs:
+                    break
+                
+                for pr in prs:
+                    created_at = pr['created_at']
+                    closed_at = pr.get('closed_at')
+                    cycle_time = self.calculate_cycle_time(created_at, closed_at)
+                    
+                    all_times.append(cycle_time)
+                    if closed_at:
+                        closed_times.append(cycle_time)
+                    else:
+                        open_times.append(cycle_time)
+                
+                # Check for next page
+                if 'next' in response.links:
+                    url = response.links['next']['url']
+                else:
+                    break
+            
+            return {
+                'avg_cycle_time_closed': sum(closed_times) / len(closed_times) if closed_times else 0.0,
+                'avg_cycle_time_open': sum(open_times) / len(open_times) if open_times else 0.0,
+                'total_avg_cycle_time': sum(all_times) / len(all_times) if all_times else 0.0
+            }
+            
+        except Exception as e:
+            logging.error(f"Error getting PR cycle times for {repo_name}: {str(e)}")
+            return {
+                'avg_cycle_time_closed': 0.0,
+                'avg_cycle_time_open': 0.0,
+                'total_avg_cycle_time': 0.0
+            }
 
     def load_checkpoint(self) -> tuple[Optional[int], List[Dict]]:
         """Load checkpoint data if it exists."""
@@ -82,6 +146,14 @@ class OrgRepoScanner:
             insights = self.get_repo_insights(repo)
             if not insights:
                 return None
+
+            # Get PR cycle times
+            pr_cycle_times = self.get_pr_cycle_times(repo_name)
+            insights.update({
+                'PR Cycle Time (Closed)': f"{pr_cycle_times['avg_cycle_time_closed']:.1f}",
+                'PR Cycle Time (Open)': f"{pr_cycle_times['avg_cycle_time_open']:.1f}",
+                'Total Avg PR Cycle Time': f"{pr_cycle_times['total_avg_cycle_time']:.1f}"
+            })
 
             # Get SonarQube data
             project_key = repo_name.lower()
